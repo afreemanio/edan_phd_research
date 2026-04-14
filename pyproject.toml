@@ -1,0 +1,90 @@
+[project]
+authors = [{name = "Andrew Freeman", email = "andrew@afreeman.io"}]
+dependencies = []
+name = "edan_phd_research"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+edan_phd_research = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+# [tool.pixi.dependencies] # for default dependencies
+# python = "3.12.*"
+
+# ----------------------
+# Shared base feature
+# ----------------------
+[tool.pixi.feature.base.dependencies]
+python = "3.12.*"
+# `pixi add numpy --feature base`
+# `pixi add --pypi numpy --feature base`
+
+# ----------------------
+# Torch: CPU feature
+# ----------------------
+[tool.pixi.feature.torch_cpu.dependencies]
+pytorch-cpu = "*"
+torchvision = "*"
+
+# ----------------------
+# Torch: GPU feature
+# Windows + Linux only
+# ----------------------
+[tool.pixi.feature.torch_gpu]
+platforms = ["win-64", "linux-64"]
+
+[tool.pixi.feature.torch_gpu.system-requirements]
+cuda = "13.0"
+
+[tool.pixi.feature.torch_gpu.dependencies]
+pytorch-gpu = "*"
+torchvision = "*"
+cuda-version = "12.6.*"
+
+# ----------------------
+# JAX: CPU feature
+# ----------------------
+[tool.pixi.feature.jax_cpu.pypi-dependencies]
+jax = "*"
+jaxlib = "*"
+
+# ----------------------
+# JAX: GPU feature
+# macOS + Linux only
+# ----------------------
+[tool.pixi.feature.jax_gpu]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+# Install JAX GPU build from PyPI as: jax[cuda13]
+[tool.pixi.feature.jax_gpu.target.linux-64.pypi-dependencies]
+jax = { version = "*", extras = ["cuda12"] }
+
+# macOS does not use the cuda13 extra; keep plain jax from PyPI there if you want PyPI JAX
+[tool.pixi.feature.jax_gpu.target.osx-arm64.pypi-dependencies]
+jax = "*"
+
+[tool.pixi.feature.jax_gpu.target.osx-64.pypi-dependencies]
+jax = "*"
+
+# ----------------------
+# Environments
+# ----------------------
+[tool.pixi.environments]
+default   = { features = ["base", "torch_cpu", "jax_cpu"], no-default-feature = true }
+torch-gpu = { features = ["base", "torch_gpu", "jax_cpu"], no-default-feature = true }
+jax-gpu   = { features = ["base", "torch_cpu", "jax_gpu"], no-default-feature = true }
+both-gpu  = { features = ["base", "torch_gpu", "jax_gpu"], no-default-feature = true }
+# pixi add --feature jax_cpu jax
+# pixi add --feature jax_cpu --pypi jax
+# pixi install -e both-gpu
+# pixi shell -e both-gpu

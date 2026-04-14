@@ -1,0 +1,186 @@
+[project]
+authors = [{name = "Andrew Freeman", email = "andrew@afreeman.io"}]
+dependencies = []
+name = "edan_phd_research"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[tool.pixi.pypi-dependencies]
+edan_phd_research = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+# [tool.pixi.dependencies] # for default dependencies
+# python = "3.12.*"
+
+# ----------------------
+# Shared base feature
+# ----------------------
+[tool.pixi.feature.base.dependencies]
+python = "3.12.*"
+annotated-types = ">=0.7.0,<0.8"
+antlr4-python3-runtime = ">=4.13.2,<5"
+asttokens = ">=3.0.1,<4"
+attrs = ">=26.1.0,<27"
+certifi = ">=2026.2.25,<2027"
+charset-normalizer = ">=3.4.7,<4"
+click = ">=8.3.2,<9"
+colorama = ">=0.4.6,<0.5"
+comm = ">=0.2.3,<0.3"
+configobj = ">=5.0.9,<6"
+contourpy = ">=1.3.3,<2"
+cycler = ">=0.12.1,<0.13"
+debugpy = ">=1.8.20,<2"
+decorator = ">=5.2.1,<6"
+docker-pycreds = ">=0.4.0,<0.5"
+dulwich = ">=1.1.0,<2"
+everett = ">=3.3.0,<4"
+executing = ">=2.2.1,<3"
+filelock = ">=3.25.2,<4"
+fonttools = ">=4.62.0,<5"
+fsspec = ">=2026.3.0,<2027"
+gitdb = ">=4.0.12,<5"
+gitpython = ">=3.1.46,<4"
+hydra-core = ">=0.11.3,<0.12"
+idna = ">=3.11,<4"
+ipykernel = ">=7.2.0,<8"
+ipython = ">=9.12.0,<10"
+ipython_pygments_lexers = ">=1.1.1,<2"
+jedi = ">=0.19.2,<0.20"
+jinja2 = ">=3.1.6,<4"
+jsonschema = ">=4.26.0,<5"
+jsonschema-specifications = ">=2025.9.1,<2026"
+jupyter_client = ">=8.8.0,<9"
+jupyter_core = ">=5.9.1,<6"
+kiwisolver = ">=1.5.0,<2"
+markdown-it-py = ">=4.0.0,<5"
+markupsafe = ">=3.0.3,<4"
+matplotlib = ">=3.10.8,<4"
+matplotlib-inline = ">=0.2.1,<0.3"
+mdurl = ">=0.1.2,<0.2"
+mpmath = ">=1.4.1,<2"
+nest-asyncio = ">=1.6.0,<2"
+networkx = ">=3.6.1,<4"
+mlflow = ">=1.2.0,<2"
+numpy = ">=2.4.3,<3"
+omegaconf = ">=1.4.1,<2"
+packaging = ">=26.0,<27"
+pandas = ">=3.0.2,<4"
+parso = ">=0.8.6,<0.9"
+pillow = ">=12.2.0,<13"
+platformdirs = ">=4.9.6,<5"
+prompt_toolkit = ">=3.0.52,<4"
+protobuf = ">=6.33.5,<7"
+psutil = ">=7.2.2,<8"
+pure_eval = ">=0.2.3,<0.3"
+pydantic = ">=2.13.0,<3"
+pydantic-core = ">=2.46.0,<3"
+pygments = ">=2.20.0,<3"
+pyparsing = ">=3.3.2,<4"
+python-box = ">=7.4.1,<8"
+python-dateutil = ">=2.9.0.post0,<3"
+pytz = ">=2026.1.post1,<2027"
+pyyaml = ">=6.0.3,<7"
+pyzmq = ">=27.1.0,<28"
+referencing = ">=0.37.0,<0.38"
+requests = ">=2.33.1,<3"
+requests-toolbelt = ">=1.0.0,<2"
+rich = ">=15.0.0,<16"
+rpds-py = ">=0.30.0,<0.31"
+scipy = ">=1.17.1,<2"
+seaborn = ">=0.13.2,<0.14"
+sentry-sdk = ">=2.58.0,<3"
+setproctitle = ">=1.3.7,<2"
+simplejson = ">=3.20.2,<4"
+six = ">=1.17.0,<2"
+smmap = ">=5.0.3,<6"
+sympy = ">=1.14.0,<2"
+optuna = ">=4.8.0,<5"
+tornado = ">=6.5.5,<7"
+tqdm = ">=4.67.3,<5"
+traitlets = ">=5.14.3,<6"
+typing-inspection = ">=0.4.2,<0.5"
+typing-extensions = ">=4.15.0,<5"
+tzdata = ">=2025c,<2026a"
+urllib3 = ">=2.6.3,<3"
+wandb = ">=0.25.1,<0.26"
+wcwidth = ">=0.6.0,<0.7"
+wrapt = ">=2.1.2,<3"
+wurlitzer = ">=3.1.1,<4"
+opencv = ">=4.13.0,<5"
+jaxtyping = ">=0.3.7,<0.4"
+equinox = ">=0.13.6,<0.14"
+etils = ">=1.12.2,<2"
+plotly = ">=6.6.0,<7"
+nbformat = ">=5.10.4,<6"
+# `pixi add numpy --feature base`
+# `pixi add --pypi numpy --feature base`
+
+# ----------------------
+# Torch: CPU feature
+# ----------------------
+[tool.pixi.feature.torch_cpu.dependencies]
+pytorch-cpu = "*"
+torchvision = "*"
+
+# ----------------------
+# Torch: GPU feature
+# Windows + Linux only
+# ----------------------
+[tool.pixi.feature.torch_gpu]
+platforms = ["win-64", "linux-64"]
+
+[tool.pixi.feature.torch_gpu.system-requirements]
+cuda = "13.0"
+
+[tool.pixi.feature.torch_gpu.dependencies]
+pytorch-gpu = "*"
+torchvision = "*"
+
+# ----------------------
+# JAX: CPU feature
+# ----------------------
+[tool.pixi.feature.jax_cpu.pypi-dependencies]
+jax = "*"
+jaxlib = "*"
+
+# ----------------------
+# JAX: GPU feature
+# macOS + Linux only
+# ----------------------
+[tool.pixi.feature.jax_gpu]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[tool.pixi.feature.jax_gpu.dependencies]
+jax = "0.9.*"
+
+# Install JAX with CUDA 12 support on Linux.
+# We explicitly list jax-cuda12-plugin because pixi resolves jax from conda-forge
+# (hash-mapping), which ignores pip extras like jax[cuda12].
+# Version must match the conda jax pin above.
+[tool.pixi.feature.jax_gpu.target.linux-64.pypi-dependencies]
+jax-cuda12-plugin = { version = ">=0.9.0,<0.10", extras = ["with-cuda"] }
+
+# ----------------------
+# Environments
+# ----------------------
+[tool.pixi.environments]
+default   = { features = ["base", "torch_cpu", "jax_cpu"], no-default-feature = true }
+torch-gpu = { features = ["base", "torch_gpu", "jax_cpu"], no-default-feature = true }
+jax-gpu   = { features = ["base", "torch_cpu", "jax_gpu"], no-default-feature = true }
+both-gpu  = { features = ["base", "torch_gpu", "jax_gpu"], no-default-feature = true }
+
+[dependency-groups]
+base = ["comet-ml>=3.31.11,<4", "semantic-version>=2.10.0,<3", "stack-data"]
+# pixi add --feature jax_cpu jax
+# pixi add --feature jax_cpu --pypi jax
+# pixi install -e both-gpu
+# pixi shell -e both-gpu

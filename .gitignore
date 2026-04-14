@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 
+.venv/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
@@ -43,4 +45,6 @@ phd/sandbox/one_off_experiments/learning_by_pruning/data/
 .v_star_cache/
 
 # Build artifacts
-build/
+build/# pixi environments
+.pixi/*
+!.pixi/config.toml

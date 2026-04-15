@@ -18,7 +18,8 @@ class IDBDState(NamedTuple):
     init_beta: base.Updates
     beta: base.Updates
     h: base.Updates
-    v: Optional[base.Updates] = None
+    v: Optional[base.Updates]
+    beta_sq_avg: Optional[base.Params]
 
 def _prediction_jacobian_to_decay_term(prediction_grads, params):
     def reduce_one(pg, p):
@@ -67,6 +68,8 @@ def optax_idbd(
     tau: float = 1e4,
     version: str = 'prediction_grads', # {prediction_grads, loss_grads}
     shadow_weight_threshold_factor: float = 0.0,
+    rms_style_beta_update: bool = False, # Whether to use rms style updates in the metagradient
+    rms_style_beta_update_beta_rho: float = 0.0, # rho / beta1 used for rms style beta updates
 ) -> base.GradientTransformation:
     """Incremental Delta-Bar-Delta optimizer.
     
@@ -93,18 +96,17 @@ def optax_idbd(
     def init_fn(params):
         assert autostep or step_size_decay == 0.0, "Step size decay is only supported with autostep!"
         assert version in ['prediction_grads', 'loss_grads'], f"Invalid IDBD version: {version}!"
-        
+
         if step_size_decay != 0.0:
             raise NotImplementedError("Step-size decay is not implemented with JAX!")
-        
+
         if autostep:
-            # Check that parameters match a linear layer structure
             weights = eqx.filter(params, lambda x: isinstance(x, Array) and x.ndim in (2, 3))
             biases = eqx.filter(params, lambda x: isinstance(x, Array) and x.ndim == 1)
-            
+
             n_weights = len(jax.tree.leaves(weights))
             n_biases = len(jax.tree.leaves(biases))
-            
+
             assert n_biases == 0, "AutoStep optimizer does not support biases!"
             assert n_weights > 0, "No valid weight parameters found!"
 
@@ -114,20 +116,30 @@ def optax_idbd(
                     "layer structures. If the weights provided to AutoStep are stacked and not "
                     "independent, then this will probably cause a silent bug."
                 )
-        
+
         init_beta = jnp.log(init_lr)
         beta = jax.tree.map(lambda x: jnp.full_like(x, init_beta), params)
         h = jax.tree.map(lambda x: jnp.zeros_like(x), params)
-        
+
         v = None
         if autostep:
             v = jax.tree.map(lambda x: jnp.zeros_like(x), params)
-        
-        return IDBDState(init_beta=init_beta, beta=beta, h=h, v=v)
+
+        beta_sq_avg = None
+        if rms_style_beta_update:
+            beta_sq_avg = jax.tree.map(lambda x: jnp.zeros_like(x), params)
+
+        return IDBDState(
+            init_beta=init_beta,
+            beta=beta,
+            h=h,
+            v=v,
+            beta_sq_avg=beta_sq_avg,
+        )
 
     def update_fn(updates, state, params):
         loss_grads, prediction_grads = updates
-        init_beta, beta, h, v = state
+        init_beta, beta, h, v, beta_sq_avg = state
 
         def reduce_pred_for_meta(pg, p):
             if pg.ndim == p.ndim:
@@ -188,16 +200,62 @@ def optax_idbd(
             # alpha, beta, v, raw_effective_step_size = tree_unzip(results, 4)
 
         else:
-            beta = jax.tree.map(
-                lambda b_i, g_i, h_i: b_i + meta_lr * g_i * h_i,
-                beta, meta_signal, h,
-            )
-            alpha = jax.tree.map(jnp.exp, beta)
+            # beta = jax.tree.map(
+            #     lambda b_i, g_i, h_i: b_i + meta_lr * g_i * h_i,
+            #     beta, meta_signal, h,
+            # )
+            # alpha = jax.tree.map(jnp.exp, beta)
+            beta_signal = jax.tree.map(lambda g_i, h_i: g_i * h_i, meta_signal, h) # ! h in version
+            # beta_signal = jax.tree.map(lambda g_i: g_i, meta_signal) # ! h out version
 
-        h = jax.tree.map(
-            lambda h_i, a_i, g_i, d_i: h_i * jnp.clip(1 - a_i * d_i, min=0) + a_i * g_i,
+            if rms_style_beta_update:
+                beta_sq_avg = jax.tree.map(
+                    lambda sq_avg, s: (
+                        rms_style_beta_update_beta_rho * sq_avg
+                        + (1.0 - rms_style_beta_update_beta_rho) * (s * s)
+                    ),
+                    beta_sq_avg,
+                    beta_signal,
+                )
+
+                beta = jax.tree.map( # ! H in version
+                    lambda b, s, sq_avg: b + meta_lr * s / (jnp.sqrt(sq_avg) + 1e-8),
+                    beta,
+                    beta_signal,
+                    beta_sq_avg,
+                )
+
+                # beta = jax.tree.map( # ! h out version
+                #     lambda b, s, sq_avg, h: b + h * meta_lr * s / (jnp.sqrt(sq_avg) + 1e-8),
+                #     beta,
+                #     beta_signal,
+                #     beta_sq_avg,
+                #     h
+                # )
+            else:
+                beta = jax.tree.map(
+                    lambda b_i, s_i: b_i + meta_lr * s_i,
+                    beta,
+                    beta_signal,
+                )
+
+        # alpha = jax.tree.map(jnp.exp, beta)
+        alpha = jax.tree.map(jax.nn.sigmoid, beta)
+
+        # h = jax.tree.map( # ! idbd1 version
+        #     lambda h_i, a_i, g_i, d_i: h_i * jnp.clip(1 - a_i * d_i, min=0) + a_i * g_i,
+        #     h, alpha, loss_grads, h_decay_term,
+        # )
+
+        h = jax.tree.map( # ! idbd3 version
+            lambda h_i, a_i, g_i, d_i: h_i * jnp.clip(1 - a_i * d_i, min=0) + g_i, 
             h, alpha, loss_grads, h_decay_term,
         )
+
+        # h = jax.tree.map( # ! notraceh version
+        #     lambda h_i, a_i, g_i, d_i: g_i, 
+        #     h, alpha, loss_grads, h_decay_term,
+        # )
 
         weight_decay_term = jax.tree.map(lambda p_i: weight_decay * p_i, params)
         param_updates = jax.tree.map(
@@ -205,7 +263,16 @@ def optax_idbd(
             alpha, loss_grads, weight_decay_term,
         )
 
-        return param_updates, IDBDState(init_beta=init_beta, beta=beta, h=h, v=v)
+        # return function for update_fn
+        return param_updates, IDBDState(
+            init_beta=init_beta,
+            beta=beta,
+            h=h,
+            v=v,
+            beta_sq_avg=beta_sq_avg,
+        )
+
+    # Return function for parent
     return base.GradientTransformation(init_fn, update_fn)
 
 # def categorical_optax_idbd(

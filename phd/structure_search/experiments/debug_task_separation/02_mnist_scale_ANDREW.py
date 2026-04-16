@@ -18,37 +18,43 @@ import time
 # ══════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════
-# N_TASKS = 2
-N_TASKS = 1
+N_TASKS = 2
+# N_TASKS = 1
 NUM_CLASSES = 10
 INPUT_PER_TASK = 784
 INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
 OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
-N_HIDDEN_MAX = 100
-MAX_CONNS = 64        # input connections per unit (half of script's 128)
+
+# N_HIDDEN_MAX = 100 # default
+N_HIDDEN_MAX = 1000
+# N_HIDDEN_MAX = 500
+# MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
+MAX_CONNS = 128        # input connections per unit 
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 100      # = prune_frequency # ! default
 BLOCK_SIZE = 500      # = prune_frequency
+# BLOCK_SIZE = 1000      # = prune_frequency
 # BLOCK_SIZE = 5000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
 TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
-CONNECTION_BUDGET = 5000
+# CONNECTION_BUDGET = 5000
+CONNECTION_BUDGET = 10000
 # PRUNE_RATE = 0.0001 # default
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
 # PRUNE_PER_BLOCK = 0 # Default  
-PRUNE_PER_BLOCK = 500
+PRUNE_PER_BLOCK = 1000
 # PRUNE_PER_BLOCK = 500
 
 SGD_LR = 1e-3
 ADAM_LR = 1e-3
-# ADAMW_LR = 1e-3 # best on mnist
-ADAMW_LR = 1e-4
+ADAMW_LR = 1e-3 # best on mnist
+# ADAMW_LR = 1e-4
 
 SEED = 42
 
@@ -56,6 +62,11 @@ IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
 # WEIGHT_DECAY = 0.0
 WEIGHT_DECAY = 0.0001
+
+GENERATE_MODE = "FULL"
+# GENERATE_MODE = "RANDOM_SPARSE"
+
+
 
 # ══════════════════════════════════════════════════════════════════════
 # DATA
@@ -273,6 +284,124 @@ def generate_fill(Wi, Wo, Mi, Mo, budget, key, all_outputs=True):
         budget_f -= int(cost)
     return Wi, Wo, Mi, Mo
 
+@jax.jit
+def grow_one_connection(Wi, Wo, Mi, Mo, key):
+    """
+    Add one random missing connection.
+    Preference:
+      1) revive a dead unit with one input + one output if possible
+      2) otherwise add one missing edge to an existing active unit
+    Returns updated params/masks and the cost used.
+    """
+    k1, k2, k3, k4 = jax.random.split(key, 4)
+
+    active_units = (Mi.sum(axis=1) + Mo.sum(axis=0)) > 0
+    dead_units = ~active_units
+
+    def revive_dead(args):
+        Wi, Wo, Mi, Mo = args
+        dead_idx = jnp.where(dead_units, size=N_HIDDEN_MAX, fill_value=N_HIDDEN_MAX)[0]
+        slot_pos = jax.random.randint(k1, (), 0, dead_units.sum())
+        h = dead_idx[slot_pos]
+
+        # add 1 random input
+        i = jax.random.randint(k2, (), 0, INPUT_DIM)
+        fan_in = 1
+        bound = jnp.sqrt(3.0 / fan_in)
+        w_in = jax.random.uniform(k3, (), minval=-bound, maxval=bound)
+
+        # add 1 random output
+        o = jax.random.randint(k4, (), 0, OUTPUT_DIM)
+
+        Wi2 = Wi.at[h, i].set(w_in)
+        Mi2 = Mi.at[h, i].set(1)
+        Wo2 = Wo.at[o, h].set(0.0)
+        Mo2 = Mo.at[o, h].set(1)
+        return Wi2, Wo2, Mi2, Mo2, jnp.int32(2)
+
+    def grow_existing(args):
+        Wi, Wo, Mi, Mo = args
+        active_idx = jnp.where(active_units, size=N_HIDDEN_MAX, fill_value=N_HIDDEN_MAX)[0]
+        h_pos = jax.random.randint(k1, (), 0, active_units.sum())
+        h = active_idx[h_pos]
+
+        # choose whether to add input or output
+        add_input = jax.random.bernoulli(k2, 0.5)
+
+        def do_input(_):
+            missing = (Mi[h] == 0)
+            n_missing = missing.sum()
+
+            def add_it(__):
+                candidates = jnp.where(missing, size=INPUT_DIM, fill_value=INPUT_DIM)[0]
+                pos = jax.random.randint(k3, (), 0, n_missing)
+                i = candidates[pos]
+                fan_in = jnp.maximum(Mi[h].sum(), 1)
+                bound = jnp.sqrt(3.0 / fan_in)
+                w = jax.random.uniform(k4, (), minval=-bound, maxval=bound)
+                return (
+                    Wi.at[h, i].set(w),
+                    Wo,
+                    Mi.at[h, i].set(1),
+                    Mo,
+                    jnp.int32(1),
+                )
+
+            return jax.lax.cond(n_missing > 0, add_it,
+                                lambda __: (Wi, Wo, Mi, Mo, jnp.int32(0)), operand=None)
+
+        def do_output(_):
+            missing = (Mo[:, h] == 0)
+            n_missing = missing.sum()
+
+            def add_it(__):
+                candidates = jnp.where(missing, size=OUTPUT_DIM, fill_value=OUTPUT_DIM)[0]
+                pos = jax.random.randint(k3, (), 0, n_missing)
+                o = candidates[pos]
+                return (
+                    Wi,
+                    Wo.at[o, h].set(0.0),
+                    Mi,
+                    Mo.at[o, h].set(1),
+                    jnp.int32(1),
+                )
+
+            return jax.lax.cond(n_missing > 0, add_it,
+                                lambda __: (Wi, Wo, Mi, Mo, jnp.int32(0)), operand=None)
+
+        return jax.lax.cond(add_input, do_input, do_output, operand=None)
+
+    can_revive = dead_units.any()
+    return jax.lax.cond(
+        can_revive,
+        revive_dead,
+        grow_existing,
+        operand=(Wi, Wo, Mi, Mo)
+    )
+
+
+@jax.jit
+def generate_fill_sparse(Wi, Wo, Mi, Mo, budget, key):
+    budget = jnp.asarray(budget, dtype=jnp.int32)
+    last_used = jnp.int32(1)  # initialise > 0 so the loop is entered
+
+    def cond(state):
+        _, _, _, _, _, budget, last_used = state
+        return (budget > 0) & (last_used > 0)
+
+    def body(state):
+        Wi, Wo, Mi, Mo, key, budget, _ = state
+        key, gk = jax.random.split(key)
+        Wi, Wo, Mi, Mo, used = grow_one_connection(Wi, Wo, Mi, Mo, gk)
+        return Wi, Wo, Mi, Mo, key, budget - used, used
+
+    Wi, Wo, Mi, Mo, _, _, _ = jax.lax.while_loop(
+        cond, body, (Wi, Wo, Mi, Mo, key, budget, last_used)
+    )
+    return Wi, Wo, Mi, Mo
+
+
+
 # ══════════════════════════════════════════════════════════════════════
 # JIT TRAINING BLOCKS
 # ══════════════════════════════════════════════════════════════════════
@@ -404,7 +533,9 @@ def run_experiment(name, mnist_images, mnist_labels, *,
                    optimizer='sgd', n_hidden_init=10, permute_period=0,
                    seed=SEED):
     utility_mode = utility
-    all_out = (generation == 'all_output')
+    # all_out = (generation == 'all_output')
+    all_out = True
+    # all_out = False
 
     print(f'\n{"=" * 65}')
     print(f'{name}')
@@ -508,39 +639,32 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             Ui, Uo, acc, opt_state, opt, utility_mode, BLOCK_SIZE
         )
 
-        # Batch prune
-        # * Prune based on percent
-        # n_active = int(Mi.sum() + Mo.sum())
-        # ntp = int(jnp.floor(acc))
-        # ntp = max(0, min(ntp, n_active)) 
-        # * Prune based on static value
-        n_active = int(Mi.sum() + Mo.sum())
-        ntp = min(PRUNE_PER_BLOCK, n_active) 
-
-        if ntp > 0:
-            rng, pk = jax.random.split(rng)
-            Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, jnp.array(ntp, dtype=jnp.int32), pk)
-            Ui = Ui * Mi
-            Uo = Uo * Mo
-        acc = acc - jnp.array(ntp, dtype=jnp.float32)
+        # Batch prune — stay on device, no int() sync
+        ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK),
+                          (Mi.sum() + Mo.sum()).astype(jnp.int32))
+        rng, pk = jax.random.split(rng)
+        Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, ntp, pk)
+        Ui = Ui * Mi
+        Uo = Uo * Mo
+        acc = acc - ntp.astype(jnp.float32)
 
         # Cleanup dead units
         Mi, Mo = cleanup_dead(Mi, Mo)
         Ui = Ui * Mi
 
-        # Generate to fill budget
-        nc = int(Mi.sum() + Mo.sum())
-        # gen_budget = ntp # * add n pruned
-        gen_budget = CONNECTION_BUDGET - nc # * add to fill budget
-        if gen_budget > 0:
-            rng, gk = jax.random.split(rng)
+        # Generate to fill budget — negative budget exits while_loop immediately
+        gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
+        rng, gk = jax.random.split(rng)
+        if GENERATE_MODE == "RANDOM_SPARSE":
+            Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
+        else:
             Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
 
         step = (bi + 1) * BLOCK_SIZE
         if step % 10_000 == 0:
             na = int(np.array((Mi.sum(axis=1) + Mo.sum(axis=0)) > 0).sum())
             nc2 = int(Mi.sum() + Mo.sum())
-            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={ntp:3d}')
+            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={int(ntp):3d}')
 
     elapsed = time.time() - t0
     print(f'  Done in {elapsed:.1f}s')
@@ -574,31 +698,31 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    # # ('Adamw optimizer',
-    # #  dict(optimizer='adamw')),
-    # ('Adamw_weight_decay optimizer',
-    #  dict(optimizer='adamw_weight_decay')),
+    # ('Adamw optimizer',
+    #  dict(optimizer='adamw')),
+    ('Adamw_weight_decay optimizer',
+     dict(optimizer='adamw_weight_decay')),
+    ('Adamw weight decay optimizer, fractional propagated',
+     dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
     # ('IDBD + fractional propagated',
     #  dict(optimizer='idbd', utility='fractional_propagated')),
     # ('Adamw_weight_decay optimizer, fractional propagated',
     #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
-    # ('idbd_rms_base_adam optimizer',
-    #  dict(optimizer='idbd_rms_base_adam')),
+    ('idbd_rms_base_adam optimizer',
+     dict(optimizer='idbd_rms_base_adam')),
 
     ('idbd_rms_base_adam optimizer, fractional propagated',
      dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
-    # # ('2. Propagated utility',
-    # #  dict(utility='propagated')),
-    # # ('3. Single output gen',
-    # #  dict(generation='single_output')),
+    # ('2. Propagated utility',
+    #  dict(utility='propagated')),
+    # ('3. Single output gen',
+    #  dict(generation='single_output')),
 
 
     # ('Adam optimizer, fractional propagated',
     #  dict(optimizer='adam', utility='fractional_propagated')),
-    # ('Adamw optimizer, fractional propagated',
-    #  dict(optimizer='adamw', utility='fractional_propagated')),
 
     # ('4. IDBD + fractional propagated, no weight decay',
     #  dict(optimizer='idbd', utility='fractional_propagated')),

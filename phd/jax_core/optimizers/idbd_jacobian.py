@@ -239,6 +239,8 @@ def optax_idbd(
                     beta_signal,
                 )
 
+        # beta = jax.tree.map(lambda b: jnp.clip(b, -30.0, 30.0), beta)
+        beta = jax.tree.map(lambda b: jnp.clip(b, -30.0, 6.0), beta)
         # alpha = jax.tree.map(jnp.exp, beta)
         alpha = jax.tree.map(jax.nn.sigmoid, beta)
 

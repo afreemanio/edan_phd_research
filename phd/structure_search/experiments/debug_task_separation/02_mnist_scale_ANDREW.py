@@ -28,22 +28,34 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 N_HIDDEN_MAX = 100
 MAX_CONNS = 64        # input connections per unit (half of script's 128)
 
+# Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 100      # = prune_frequency # ! default
-BLOCK_SIZE = 5000      # = prune_frequency
+BLOCK_SIZE = 500      # = prune_frequency
+# BLOCK_SIZE = 5000      # = prune_frequency
+# BLOCK_SIZE = 50000      # = prune_frequency
 TOTAL_STEPS = 100_000
-CONNECTION_BUDGET = 3000
+# CONNECTION_BUDGET = 3000
+CONNECTION_BUDGET = 5000
 # PRUNE_RATE = 0.0001 # default
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
+# PRUNE_PER_BLOCK = 0 # Default  
+PRUNE_PER_BLOCK = 500
+# PRUNE_PER_BLOCK = 500
+
 SGD_LR = 1e-3
 ADAM_LR = 1e-3
+# ADAMW_LR = 1e-3 # best on mnist
+ADAMW_LR = 1e-4
+
 SEED = 42
 
 IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
-WEIGHT_DECAY = 0.0
+# WEIGHT_DECAY = 0.0
+WEIGHT_DECAY = 0.0001
 
 # ══════════════════════════════════════════════════════════════════════
 # DATA
@@ -421,7 +433,35 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         opt = optax.sgd(SGD_LR)
     elif optimizer == 'adam':
         opt = optax.adam(ADAM_LR)
-    elif optimizer == 'idbd':
+    elif optimizer == 'adamw':
+        opt = optax.adamw(ADAMW_LR)
+    elif optimizer == 'adamw_weight_decay':
+        opt = optax.adamw(ADAMW_LR, weight_decay=WEIGHT_DECAY)
+    elif optimizer == 'idbd_rms_base_adam':
+        opt = optax_idbd(
+            # meta_lr=0.0, 
+            meta_lr=1e-3, 
+            init_lr=ADAMW_LR, 
+            base_optimizer='adamw',
+            base_optimizer_params={'beta1': 0.9, 'beta2': 0.999}, 
+            weight_decay=WEIGHT_DECAY,
+            autostep=False,
+            version="prediction_grads",
+            rms_style_beta_update=True,
+            rms_style_beta_update_beta_rho=0.9,
+            # rms_style_beta_update_beta_rho=0.0,
+            )
+        # opt = optax_idbd(
+        #     meta_lr=IDBD_META_LR, 
+        #     init_lr=IDBD_INIT_LR, 
+        #     base_optimizer='adamw',
+        #     base_optimizer_params={'beta1': 0.9, 'beta2': 0.999}, 
+        #     weight_decay=WEIGHT_DECAY,
+        #     autostep=False,
+        #     version="prediction_grads",
+        #     rms_style_beta_update=True,
+        #     rms_style_beta_update_beta_rho=0.9,)
+    elif optimizer == 'idbd_rms':
         opt = optax_idbd(
             meta_lr=IDBD_META_LR,
             init_lr=IDBD_INIT_LR,
@@ -429,6 +469,16 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             autostep=False,
             version="prediction_grads",
             rms_style_beta_update=True,
+            rms_style_beta_update_beta_rho=0.9,
+        )
+    elif optimizer == 'idbd':
+        opt = optax_idbd(
+            meta_lr=IDBD_META_LR,
+            init_lr=IDBD_INIT_LR,
+            weight_decay=WEIGHT_DECAY,
+            autostep=False,
+            version="prediction_grads",
+            rms_style_beta_update=False,
             rms_style_beta_update_beta_rho=0.9,
         )
     else:
@@ -459,9 +509,14 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         )
 
         # Batch prune
+        # * Prune based on percent
+        # n_active = int(Mi.sum() + Mo.sum())
+        # ntp = int(jnp.floor(acc))
+        # ntp = max(0, min(ntp, n_active)) 
+        # * Prune based on static value
         n_active = int(Mi.sum() + Mo.sum())
-        ntp = int(jnp.floor(acc))
-        ntp = max(0, min(ntp, n_active))
+        ntp = min(PRUNE_PER_BLOCK, n_active) 
+
         if ntp > 0:
             rng, pk = jax.random.split(rng)
             Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, jnp.array(ntp, dtype=jnp.int32), pk)
@@ -475,7 +530,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 
         # Generate to fill budget
         nc = int(Mi.sum() + Mo.sum())
-        gen_budget = CONNECTION_BUDGET - nc
+        # gen_budget = ntp # * add n pruned
+        gen_budget = CONNECTION_BUDGET - nc # * add to fill budget
         if gen_budget > 0:
             rng, gk = jax.random.split(rng)
             Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
@@ -501,26 +557,58 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     final_loss = float(eval_loss(Wi, Wo, Mi, Mo, jnp.array(test_imgs), jnp.array(test_lbls)))
     print(f'  Final loss: {final_loss:.4f}')
 
-    return measure_purity(Mi, Mo)
+    mip, mop, mie = measure_purity(Mi, Mo)
+    return mip, mop, mie, final_loss
 
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENTS
 # ══════════════════════════════════════════════════════════════════════
 
 EXPERIMENTS = [
-    ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
-    # ('5. IDBD optimizer', dict(optimizer='idbd')),
-    ('2. Fractional propagated', dict(utility='fractional_propagated')),
-    ('3. IDBD',
-     dict(optimizer='idbd')),
-    ('4. IDBD + fractional propagated',
-     dict(optimizer='idbd', utility='fractional_propagated')),
-    # ('2. Propagated utility',
-    #  dict(utility='propagated')),
-    # ('3. Single output gen',
-    #  dict(generation='single_output')),
-    # ('4. Adam optimizer',
-    #  dict(optimizer='adam')),
+    # ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
+    # ('Baseline', {}),
+    # # # ('5. IDBD optimizer', dict(optimizer='idbd')),
+    # # ('2. Fractional propagated', dict(utility='fractional_propagated')),
+    # ('IDBD',
+    #  dict(optimizer='idbd')),
+    # # ('4. Adam optimizer',
+    # #  dict(optimizer='adam')),
+
+    # # ('Adamw optimizer',
+    # #  dict(optimizer='adamw')),
+    # ('Adamw_weight_decay optimizer',
+    #  dict(optimizer='adamw_weight_decay')),
+
+    # ('IDBD + fractional propagated',
+    #  dict(optimizer='idbd', utility='fractional_propagated')),
+    # ('Adamw_weight_decay optimizer, fractional propagated',
+    #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
+
+    # ('idbd_rms_base_adam optimizer',
+    #  dict(optimizer='idbd_rms_base_adam')),
+
+    ('idbd_rms_base_adam optimizer, fractional propagated',
+     dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
+    # # ('2. Propagated utility',
+    # #  dict(utility='propagated')),
+    # # ('3. Single output gen',
+    # #  dict(generation='single_output')),
+
+
+    # ('Adam optimizer, fractional propagated',
+    #  dict(optimizer='adam', utility='fractional_propagated')),
+    # ('Adamw optimizer, fractional propagated',
+    #  dict(optimizer='adamw', utility='fractional_propagated')),
+
+    # ('4. IDBD + fractional propagated, no weight decay',
+    #  dict(optimizer='idbd', utility='fractional_propagated')),
+
+    
+
+    # ('4. IDBD + fractional propagated, weight decay',
+    #  dict(optimizer='idbd', utility='fractional_propagated')),
+     
+
     # ('5. Non-stationary (permute=2000)',
     #  dict(permute_period=2000)),
     # ('6. Empty init',
@@ -539,14 +627,14 @@ if __name__ == '__main__':
 
     results = {}
     for name, kw in EXPERIMENTS:
-        ip, op, ie = run_experiment(name, mnist_images, mnist_labels, **kw)
-        results[name] = (ip, op, ie)
+        ip, op, ie, fl = run_experiment(name, mnist_images, mnist_labels, **kw)
+        results[name] = (ip, op, ie, fl)
 
-    print(f'\n{"=" * 75}')
+    print(f'\n{"=" * 85}')
     print('SUMMARY')
-    print(f'{"=" * 75}')
-    print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6}')
-    print('-' * 75)
-    for name, (ip, op, ie) in results.items():
+    print(f'{"=" * 85}')
+    print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8}')
+    print('-' * 85)
+    for name, (ip, op, ie, fl) in results.items():
         flag = ' <--' if ip < 0.8 else ''
-        print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f}{flag}')
+        print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f} {fl:>8.4f}{flag}')

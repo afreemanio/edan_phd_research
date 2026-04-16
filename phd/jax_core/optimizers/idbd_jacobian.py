@@ -20,6 +20,10 @@ class IDBDState(NamedTuple):
     h: base.Updates
     v: Optional[base.Updates]
     beta_sq_avg: Optional[base.Params]
+    # AdamW base optimizer buffers
+    step: int
+    exp_avg: Optional[base.Updates]      # first moment (m_t)
+    exp_avg_sq: Optional[base.Updates]   # second moment (v_t)
 
 def _prediction_jacobian_to_decay_term(prediction_grads, params):
     def reduce_one(pg, p):
@@ -70,6 +74,8 @@ def optax_idbd(
     shadow_weight_threshold_factor: float = 0.0,
     rms_style_beta_update: bool = False, # Whether to use rms style updates in the metagradient
     rms_style_beta_update_beta_rho: float = 0.0, # rho / beta1 used for rms style beta updates
+    base_optimizer: str = 'sgd',  # 'sgd' or 'adamw'
+    base_optimizer_params: Optional[dict] = None,  # e.g. {'beta1': 0.9, 'beta2': 0.999, 'eps': 1e-8}
 ) -> base.GradientTransformation:
     """Incremental Delta-Bar-Delta optimizer.
     
@@ -92,6 +98,10 @@ def optax_idbd(
     Returns:
         A :class:`optax.GradientTransformation` object.
     """
+
+    assert base_optimizer in ('sgd', 'adamw'), f"base_optimizer must be 'sgd' or 'adamw', got {base_optimizer!r}"
+    _adamw_defaults = {'beta1': 0.9, 'beta2': 0.999, 'eps': 1e-8, 'bias_correction': True}
+    _bop = {**_adamw_defaults, **(base_optimizer_params or {})}
 
     def init_fn(params):
         assert autostep or step_size_decay == 0.0, "Step size decay is only supported with autostep!"
@@ -117,7 +127,10 @@ def optax_idbd(
                     "independent, then this will probably cause a silent bug."
                 )
 
-        init_beta = jnp.log(init_lr)
+        # sigmoid(logit(init_lr)) = init_lr exactly, matching the sigmoid alpha transform.
+        # Previously used log(init_lr) which was correct for exp(beta) but gives
+        # sigmoid(log(lr)) = lr/(1+lr) ≠ lr, causing slight drift vs a plain AdamW/SGD baseline.
+        init_beta = jnp.log(init_lr / (1.0 - init_lr))  # logit
         beta = jax.tree.map(lambda x: jnp.full_like(x, init_beta), params)
         h = jax.tree.map(lambda x: jnp.zeros_like(x), params)
 
@@ -129,17 +142,27 @@ def optax_idbd(
         if rms_style_beta_update:
             beta_sq_avg = jax.tree.map(lambda x: jnp.zeros_like(x), params)
 
+        exp_avg = None
+        exp_avg_sq = None
+        if base_optimizer == 'adamw':
+            exp_avg = jax.tree.map(lambda x: jnp.zeros_like(x), params)
+            exp_avg_sq = jax.tree.map(lambda x: jnp.zeros_like(x), params)
+
         return IDBDState(
             init_beta=init_beta,
             beta=beta,
             h=h,
             v=v,
             beta_sq_avg=beta_sq_avg,
+            step=0,
+            exp_avg=exp_avg,
+            exp_avg_sq=exp_avg_sq,
         )
 
     def update_fn(updates, state, params):
         loss_grads, prediction_grads = updates
-        init_beta, beta, h, v, beta_sq_avg = state
+        init_beta, beta, h, v, beta_sq_avg, step, exp_avg, exp_avg_sq = state
+        step = step + 1
 
         def reduce_pred_for_meta(pg, p):
             if pg.ndim == p.ndim:
@@ -259,11 +282,42 @@ def optax_idbd(
         #     h, alpha, loss_grads, h_decay_term,
         # )
 
-        weight_decay_term = jax.tree.map(lambda p_i: weight_decay * p_i, params)
-        param_updates = jax.tree.map(
-            lambda a_i, g_i, w_i: -a_i * (g_i + w_i),
-            alpha, loss_grads, weight_decay_term,
-        )
+        if base_optimizer == 'adamw':
+            beta1 = _bop['beta1']
+            beta2 = _bop['beta2']
+            eps = _bop['eps']
+            bias_correction = _bop['bias_correction']
+
+            exp_avg = jax.tree.map(
+                lambda m, g: beta1 * m + (1.0 - beta1) * g,
+                exp_avg, loss_grads,
+            )
+            exp_avg_sq = jax.tree.map(
+                lambda v_i, g: beta2 * v_i + (1.0 - beta2) * g * g,
+                exp_avg_sq, loss_grads,
+            )
+
+            if bias_correction:
+                bc1 = 1.0 - beta1 ** step
+                bc2 = 1.0 - beta2 ** step
+                m_hat = jax.tree.map(lambda m: m / bc1, exp_avg)
+                v_hat = jax.tree.map(lambda v_i: v_i / bc2, exp_avg_sq)
+            else:
+                m_hat = exp_avg
+                v_hat = exp_avg_sq
+
+            # Decoupled weight decay (AdamW style)
+            wd_updates = jax.tree.map(lambda p_i: weight_decay * p_i, params)
+            param_updates = jax.tree.map(
+                lambda a_i, m_i, v_i, w_i: -a_i * (m_i / (jnp.sqrt(v_i) + eps) + w_i),
+                alpha, m_hat, v_hat, wd_updates,
+            )
+        else:  # sgd
+            weight_decay_term = jax.tree.map(lambda p_i: weight_decay * p_i, params)
+            param_updates = jax.tree.map(
+                lambda a_i, g_i, w_i: -a_i * (g_i + w_i),
+                alpha, loss_grads, weight_decay_term,
+            )
 
         # return function for update_fn
         return param_updates, IDBDState(
@@ -272,6 +326,9 @@ def optax_idbd(
             h=h,
             v=v,
             beta_sq_avg=beta_sq_avg,
+            step=step,
+            exp_avg=exp_avg,
+            exp_avg_sq=exp_avg_sq,
         )
 
     # Return function for parent

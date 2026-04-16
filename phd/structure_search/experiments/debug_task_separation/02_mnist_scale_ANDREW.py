@@ -11,13 +11,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from phd.jax_core.optimizers.idbd_jacobian import optax_idbd
 from functools import partial
 import time
 
 # ══════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════
-N_TASKS = 2
+# N_TASKS = 2
+N_TASKS = 1
 NUM_CLASSES = 10
 INPUT_PER_TASK = 784
 INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
@@ -26,16 +28,22 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 N_HIDDEN_MAX = 100
 MAX_CONNS = 64        # input connections per unit (half of script's 128)
 
-BLOCK_SIZE = 100      # = prune_frequency
+# BLOCK_SIZE = 100      # = prune_frequency # ! default
+BLOCK_SIZE = 5000      # = prune_frequency
 TOTAL_STEPS = 100_000
 CONNECTION_BUDGET = 3000
-PRUNE_RATE = 0.0001
+# PRUNE_RATE = 0.0001 # default
+PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
 SGD_LR = 1e-3
 ADAM_LR = 1e-3
 SEED = 42
+
+IDBD_INIT_LR = 1e-6
+IDBD_META_LR = 1e-3
+WEIGHT_DECAY = 0.0
 
 # ══════════════════════════════════════════════════════════════════════
 # DATA
@@ -91,16 +99,98 @@ def loss_ce(Wi, Wo, Mi, Mo, x, label):
 # UTILITY
 # ══════════════════════════════════════════════════════════════════════
 
-def compute_utility(Wi, Wo, Mi, Mo, x, use_prop):
+# def compute_utility(Wi, Wo, Mi, Mo, x, use_prop):
+#     _, h = forward(Wi, Wo, Mi, Mo, x)
+#     U_in_c = jnp.abs(x)[None, :] * jnp.abs(Wi) * Mi
+#     U_out = jnp.abs(h)[None, :] * jnp.abs(Wo) * Mo
+#     parent = U_out.sum(axis=0)
+#     raw = U_in_c.sum(axis=1)
+#     sc = jnp.where(jnp.abs(raw) > 1e-10, parent / raw, 1.0)
+#     U_in_p = U_in_c * sc[:, None] * Mi
+#     U_in = jnp.where(use_prop, U_in_p, U_in_c)
+#     return U_in, U_out
+
+def compute_utility_contribution(Wi, Wo, Mi, Mo, x):
     _, h = forward(Wi, Wo, Mi, Mo, x)
-    U_in_c = jnp.abs(x)[None, :] * jnp.abs(Wi) * Mi
+    U_in = jnp.abs(x)[None, :] * jnp.abs(Wi) * Mi
     U_out = jnp.abs(h)[None, :] * jnp.abs(Wo) * Mo
+    return U_in, U_out
+
+def compute_utility_propagated(Wi, Wo, Mi, Mo, x):
+    U_in_c, U_out = compute_utility_contribution(Wi, Wo, Mi, Mo, x)
     parent = U_out.sum(axis=0)
     raw = U_in_c.sum(axis=1)
     sc = jnp.where(jnp.abs(raw) > 1e-10, parent / raw, 1.0)
-    U_in_p = U_in_c * sc[:, None] * Mi
-    U_in = jnp.where(use_prop, U_in_p, U_in_c)
+    U_in = U_in_c * sc[:, None] * Mi
     return U_in, U_out
+
+def compute_utility_fractional_propagated(Wi, Wo, Mi, Mo, x):
+    _, h = forward(Wi, Wo, Mi, Mo, x)
+
+    # Raw local contribution magnitudes
+    C_in = jnp.abs(x)[None, :] * jnp.abs(Wi) * Mi
+    C_out = jnp.abs(h)[None, :] * jnp.abs(Wo) * Mo
+
+    # Output node utilities: each output gets utility 1
+    U_output_node = jnp.ones((OUTPUT_DIM,))
+
+    # Hidden -> Output edges get a fraction of each output node utility
+    out_total = jnp.sum(C_out, axis=1, keepdims=True)
+    out_frac = jnp.where(out_total > 1e-10, C_out / out_total, 0.0)
+    U_out = out_frac * U_output_node[:, None] * Mo
+
+    # Hidden node utility = sum of outgoing edge utilities
+    U_hidden_node = jnp.sum(U_out, axis=0)
+
+    # Input -> Hidden edges get a fraction of the hidden node utility
+    in_total = jnp.sum(C_in, axis=1, keepdims=True)
+    in_frac = jnp.where(in_total > 1e-10, C_in / in_total, 0.0)
+    U_in = in_frac * U_hidden_node[:, None] * Mi
+
+    return U_in, U_out
+
+def compute_utility(Wi, Wo, Mi, Mo, x, utility_mode):
+    if utility_mode == 'contribution':
+        return compute_utility_contribution(Wi, Wo, Mi, Mo, x)
+    if utility_mode == 'propagated':
+        return compute_utility_propagated(Wi, Wo, Mi, Mo, x)
+    if utility_mode == 'fractional_propagated':
+        return compute_utility_fractional_propagated(Wi, Wo, Mi, Mo, x)
+    raise ValueError(f"Unknown utility_mode: {utility_mode}")
+
+def _predict_only(Wi, Wo, Mi, Mo, x):
+    raw, _ = forward(Wi, Wo, Mi, Mo, x)
+    return raw
+
+def _train_step_optax(Wi, Wo, Mi, Mo, x, y, optimizer, opt_state):
+    params = {"Wi": Wi, "Wo": Wo}
+
+    def loss_from_params(params):
+        return loss_ce(params["Wi"], params["Wo"], Mi, Mo, x, y)
+
+    def pred_from_params(params):
+        return _predict_only(params["Wi"], params["Wo"], Mi, Mo, x)
+
+    loss_grads = jax.grad(loss_from_params)(params)
+
+    # IDBD needs prediction jacobians; normal optax optimizers do not
+    if hasattr(opt_state, "beta"):
+        prediction_grads = jax.jacrev(pred_from_params)(params)
+        optimizer_payload = (loss_grads, prediction_grads)
+    else:
+        optimizer_payload = loss_grads
+
+    updates, opt_state = optimizer.update(optimizer_payload, opt_state, params)
+    updates = {
+        "Wi": updates["Wi"] * Mi,
+        "Wo": updates["Wo"] * Mo,
+    }
+    new_params = optax.apply_updates(params, updates)
+
+    Wi = new_params["Wi"] * Mi
+    Wo = new_params["Wo"] * Mo
+    return Wi, Wo, opt_state
+
 
 # ══════════════════════════════════════════════════════════════════════
 # BATCH PRUNING
@@ -177,46 +267,72 @@ def generate_fill(Wi, Wo, Mi, Mo, budget, key, all_outputs=True):
 
 _adam = optax.adam(ADAM_LR)
 
-@partial(jax.jit, static_argnames=('n_steps',))
-def train_block_sgd(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc, use_prop, n_steps):
+# @partial(jax.jit, static_argnames=('n_steps',))
+# def train_block_sgd(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc, use_prop, n_steps):
+#     n_active = (Mi.sum() + Mo.sum()).astype(jnp.float32)
+#     acc_inc = PRUNE_RATE * n_active
+
+#     def body(carry, data):
+#         Wi, Wo, Ui, Uo, acc = carry
+#         x, y = data
+#         gi, go = jax.grad(loss_ce, argnums=(0, 1))(Wi, Wo, Mi, Mo, x, y)
+#         Wi = Wi - SGD_LR * gi * Mi
+#         Wo = Wo - SGD_LR * go * Mo
+#         ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, use_prop)
+#         Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
+#         Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
+#         return (Wi, Wo, Ui, Uo, acc + acc_inc), None
+
+#     (Wi, Wo, Ui, Uo, acc), _ = jax.lax.scan(
+#         body, (Wi, Wo, Ui, Uo, acc), (images, labels))
+#     return Wi, Wo, Ui, Uo, acc
+
+# @partial(jax.jit, static_argnames=('n_steps',))
+# def train_block_adam(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc, ost, use_prop, n_steps):
+#     n_active = (Mi.sum() + Mo.sum()).astype(jnp.float32)
+#     acc_inc = PRUNE_RATE * n_active
+
+#     def body(carry, data):
+#         Wi, Wo, ost, Ui, Uo, acc = carry
+#         x, y = data
+#         gi, go = jax.grad(loss_ce, argnums=(0, 1))(Wi, Wo, Mi, Mo, x, y)
+#         upd, ost2 = _adam.update((gi, go), ost, (Wi, Wo))
+#         Wi = Wi + upd[0] * Mi
+#         Wo = Wo + upd[1] * Mo
+#         ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, use_prop)
+#         Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
+#         Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
+#         return (Wi, Wo, ost2, Ui, Uo, acc + acc_inc), None
+
+#     (Wi, Wo, ost, Ui, Uo, acc), _ = jax.lax.scan(
+#         body, (Wi, Wo, ost, Ui, Uo, acc), (images, labels))
+#     return Wi, Wo, Ui, Uo, acc, ost
+
+
+@partial(jax.jit, static_argnames=('optimizer', 'utility_mode', 'n_steps'))
+def train_block_optax(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc,
+                      opt_state, optimizer, utility_mode, n_steps):
     n_active = (Mi.sum() + Mo.sum()).astype(jnp.float32)
     acc_inc = PRUNE_RATE * n_active
 
     def body(carry, data):
-        Wi, Wo, Ui, Uo, acc = carry
+        Wi, Wo, Ui, Uo, acc, opt_state = carry
         x, y = data
-        gi, go = jax.grad(loss_ce, argnums=(0, 1))(Wi, Wo, Mi, Mo, x, y)
-        Wi = Wi - SGD_LR * gi * Mi
-        Wo = Wo - SGD_LR * go * Mo
-        ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, use_prop)
+
+        Wi, Wo, opt_state = _train_step_optax(
+            Wi, Wo, Mi, Mo, x, y, optimizer, opt_state
+        )
+
+        ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, utility_mode)
         Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
         Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
-        return (Wi, Wo, Ui, Uo, acc + acc_inc), None
 
-    (Wi, Wo, Ui, Uo, acc), _ = jax.lax.scan(
-        body, (Wi, Wo, Ui, Uo, acc), (images, labels))
-    return Wi, Wo, Ui, Uo, acc
+        return (Wi, Wo, Ui, Uo, acc + acc_inc, opt_state), None
 
-@partial(jax.jit, static_argnames=('n_steps',))
-def train_block_adam(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc, ost, use_prop, n_steps):
-    n_active = (Mi.sum() + Mo.sum()).astype(jnp.float32)
-    acc_inc = PRUNE_RATE * n_active
-
-    def body(carry, data):
-        Wi, Wo, ost, Ui, Uo, acc = carry
-        x, y = data
-        gi, go = jax.grad(loss_ce, argnums=(0, 1))(Wi, Wo, Mi, Mo, x, y)
-        upd, ost2 = _adam.update((gi, go), ost, (Wi, Wo))
-        Wi = Wi + upd[0] * Mi
-        Wo = Wo + upd[1] * Mo
-        ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, use_prop)
-        Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
-        Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
-        return (Wi, Wo, ost2, Ui, Uo, acc + acc_inc), None
-
-    (Wi, Wo, ost, Ui, Uo, acc), _ = jax.lax.scan(
-        body, (Wi, Wo, ost, Ui, Uo, acc), (images, labels))
-    return Wi, Wo, Ui, Uo, acc, ost
+    (Wi, Wo, Ui, Uo, acc, opt_state), _ = jax.lax.scan(
+        body, (Wi, Wo, Ui, Uo, acc, opt_state), (images, labels)
+    )
+    return Wi, Wo, Ui, Uo, acc, opt_state
 
 # ══════════════════════════════════════════════════════════════════════
 # METRIC
@@ -275,8 +391,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
                    optimizer='sgd', n_hidden_init=10, permute_period=0,
                    seed=SEED):
-    use_prop = jnp.array(utility == 'propagated')
-    use_adam = (optimizer == 'adam')
+    utility_mode = utility
     all_out = (generation == 'all_output')
 
     print(f'\n{"=" * 65}')
@@ -302,7 +417,24 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         rng, gk = jax.random.split(rng)
         Wi, Wo, Mi, Mo, _, _ = generate_unit(Wi, Wo, Mi, Mo, gk, all_out)
 
-    ost = _adam.init((Wi, Wo)) if use_adam else None
+    if optimizer == 'sgd':
+        opt = optax.sgd(SGD_LR)
+    elif optimizer == 'adam':
+        opt = optax.adam(ADAM_LR)
+    elif optimizer == 'idbd':
+        opt = optax_idbd(
+            meta_lr=IDBD_META_LR,
+            init_lr=IDBD_INIT_LR,
+            weight_decay=WEIGHT_DECAY,
+            autostep=False,
+            version="prediction_grads",
+            rms_style_beta_update=True,
+            rms_style_beta_update_beta_rho=0.9,
+        )
+    else:
+        raise ValueError(f"Unsupported optimizer: {optimizer}")
+
+    opt_state = opt.init({"Wi": Wi, "Wo": Wo})
 
     t0 = time.time()
     n_blocks = TOTAL_STEPS // BLOCK_SIZE
@@ -313,14 +445,18 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         imgs_j, lbls_j = jnp.array(imgs), jnp.array(lbls)
 
         # Train + accumulate
-        if use_adam:
-            Wi, Wo, Ui, Uo, acc, ost = train_block_adam(
-                Wi, Wo, Mi, Mo, imgs_j, lbls_j, Ui, Uo, acc, ost,
-                use_prop, BLOCK_SIZE)
-        else:
-            Wi, Wo, Ui, Uo, acc = train_block_sgd(
-                Wi, Wo, Mi, Mo, imgs_j, lbls_j, Ui, Uo, acc,
-                use_prop, BLOCK_SIZE)
+        # if use_adam:
+        #     Wi, Wo, Ui, Uo, acc, ost = train_block_adam(
+        #         Wi, Wo, Mi, Mo, imgs_j, lbls_j, Ui, Uo, acc, ost,
+        #         use_prop, BLOCK_SIZE)
+        # else:
+        #     Wi, Wo, Ui, Uo, acc = train_block_sgd(
+        #         Wi, Wo, Mi, Mo, imgs_j, lbls_j, Ui, Uo, acc,
+        #         use_prop, BLOCK_SIZE)
+        Wi, Wo, Ui, Uo, acc, opt_state = train_block_optax(
+            Wi, Wo, Mi, Mo, imgs_j, lbls_j,
+            Ui, Uo, acc, opt_state, opt, utility_mode, BLOCK_SIZE
+        )
 
         # Batch prune
         n_active = int(Mi.sum() + Mo.sum())
@@ -372,23 +508,28 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 # ══════════════════════════════════════════════════════════════════════
 
 EXPERIMENTS = [
-    ('1. Baseline (contrib, all_out, SGD, stationary)',
-     {}),
-    ('2. Propagated utility',
-     dict(utility='propagated')),
-    ('3. Single output gen',
-     dict(generation='single_output')),
-    ('4. Adam optimizer',
-     dict(optimizer='adam')),
-    ('5. Non-stationary (permute=2000)',
-     dict(permute_period=2000)),
-    ('6. Empty init',
-     dict(n_hidden_init=0)),
-    ('7. Propagated + single out + Adam',
-     dict(utility='propagated', generation='single_output', optimizer='adam')),
-    ('8. All combined (script-like)',
-     dict(utility='propagated', generation='single_output', optimizer='adam',
-          n_hidden_init=0, permute_period=2000)),
+    ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
+    # ('5. IDBD optimizer', dict(optimizer='idbd')),
+    ('2. Fractional propagated', dict(utility='fractional_propagated')),
+    ('3. IDBD',
+     dict(optimizer='idbd')),
+    ('4. IDBD + fractional propagated',
+     dict(optimizer='idbd', utility='fractional_propagated')),
+    # ('2. Propagated utility',
+    #  dict(utility='propagated')),
+    # ('3. Single output gen',
+    #  dict(generation='single_output')),
+    # ('4. Adam optimizer',
+    #  dict(optimizer='adam')),
+    # ('5. Non-stationary (permute=2000)',
+    #  dict(permute_period=2000)),
+    # ('6. Empty init',
+    #  dict(n_hidden_init=0)),
+    # ('7. Propagated + single out + Adam',
+    #  dict(utility='propagated', generation='single_output', optimizer='adam')),
+    # ('8. All combined (script-like)',
+    #  dict(utility='propagated', generation='single_output', optimizer='adam',
+    #       n_hidden_init=0, permute_period=2000)),
 ]
 
 if __name__ == '__main__':

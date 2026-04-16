@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from phd.jax_core.optimizers.idbd_jacobian import optax_idbd
+from phd.jax_core.optimizers.idbd_jacobian import IDBDState, optax_idbd
 from functools import partial
 import time
 
@@ -27,28 +27,28 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
 
 # N_HIDDEN_MAX = 100 # default
-N_HIDDEN_MAX = 1000
-# N_HIDDEN_MAX = 500
+# N_HIDDEN_MAX = 1000
+N_HIDDEN_MAX = 500
 # MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
 MAX_CONNS = 128        # input connections per unit 
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 100      # = prune_frequency # ! default
-BLOCK_SIZE = 500      # = prune_frequency
+# BLOCK_SIZE = 500      # = prune_frequency
 # BLOCK_SIZE = 1000      # = prune_frequency
 # BLOCK_SIZE = 5000      # = prune_frequency
+BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
 TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
 # CONNECTION_BUDGET = 5000
 CONNECTION_BUDGET = 10000
-# PRUNE_RATE = 0.0001 # default
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
 # PRUNE_PER_BLOCK = 0 # Default  
-PRUNE_PER_BLOCK = 1000
+PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 500
 
 SGD_LR = 1e-3
@@ -121,6 +121,65 @@ def loss_ce(Wi, Wo, Mi, Mo, x, label):
 # ══════════════════════════════════════════════════════════════════════
 # UTILITY
 # ══════════════════════════════════════════════════════════════════════
+
+def _reset_like(mask, x, value=0.0):
+    if x is None:
+        return None
+    fill = jnp.full_like(x, value) if np.isscalar(value) else value
+    return jnp.where(mask, fill, x)
+
+def reset_adam_family_state(opt_state, grown_masks):
+    # Works for optax.adam / adamw style states with count + mu/nu.
+    # We leave the global count alone.
+    if hasattr(opt_state, "mu") and hasattr(opt_state, "nu"):
+        return opt_state._replace(
+            mu=jax.tree.map(lambda m, s: jnp.where(m, 0, s), grown_masks, opt_state.mu),
+            nu=jax.tree.map(lambda m, s: jnp.where(m, 0, s), grown_masks, opt_state.nu),
+        )
+    return opt_state
+
+def reset_idbd_state(opt_state: IDBDState, grown_masks):
+    return IDBDState(
+        init_beta=opt_state.init_beta,   # global scalar, keep unchanged
+        beta=jax.tree.map(
+            lambda m, b: jnp.where(m, jnp.full_like(b, opt_state.init_beta), b),
+            grown_masks, opt_state.beta
+        ),
+        h=jax.tree.map(
+            lambda m, h: jnp.where(m, 0, h),
+            grown_masks, opt_state.h
+        ),
+        v=None if opt_state.v is None else jax.tree.map(
+            lambda m, v: jnp.where(m, 0, v),
+            grown_masks, opt_state.v
+        ),
+        beta_sq_avg=None if opt_state.beta_sq_avg is None else jax.tree.map(
+            lambda m, v: jnp.where(m, 0, v),
+            grown_masks, opt_state.beta_sq_avg
+        ),
+        step=opt_state.step,  # global counter, keep unchanged
+        exp_avg=None if opt_state.exp_avg is None else jax.tree.map(
+            lambda m, v: jnp.where(m, 0, v),
+            grown_masks, opt_state.exp_avg
+        ),
+        exp_avg_sq=None if opt_state.exp_avg_sq is None else jax.tree.map(
+            lambda m, v: jnp.where(m, 0, v),
+            grown_masks, opt_state.exp_avg_sq
+        ),
+    )
+
+def maybe_reset_opt_state(opt_state, grown_masks):
+    if isinstance(opt_state, IDBDState):
+        return reset_idbd_state(opt_state, grown_masks)
+    return reset_adam_family_state(opt_state, grown_masks)
+
+@jax.jit
+def _reset_grown_connections(opt_state, Mi, Mo, old_Mi, old_Mo):
+    """JIT-compiled: compute grown masks and reset optimizer state in one pass."""
+    grown_Wi = (Mi == 1) & (old_Mi == 0)
+    grown_Wo = (Mo == 1) & (old_Mo == 0)
+    return maybe_reset_opt_state(opt_state, {"Wi": grown_Wi, "Wo": grown_Wo})
+
 
 # def compute_utility(Wi, Wo, Mi, Mo, x, use_prop):
 #     _, h = forward(Wi, Wo, Mi, Mo, x)
@@ -640,6 +699,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         )
 
         # Batch prune — stay on device, no int() sync
+        old_Mi, old_Mo = Mi, Mo
         ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK),
                           (Mi.sum() + Mo.sum()).astype(jnp.int32))
         rng, pk = jax.random.split(rng)
@@ -659,6 +719,9 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
         else:
             Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
+
+        # Reset optimizer memory for any connection whose mask changed
+        opt_state = _reset_grown_connections(opt_state, Mi, Mo, old_Mi, old_Mo)
 
         step = (bi + 1) * BLOCK_SIZE
         if step % 10_000 == 0:
@@ -702,16 +765,16 @@ EXPERIMENTS = [
     #  dict(optimizer='adamw')),
     ('Adamw_weight_decay optimizer',
      dict(optimizer='adamw_weight_decay')),
-    ('Adamw weight decay optimizer, fractional propagated',
-     dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
-
-    # ('IDBD + fractional propagated',
-    #  dict(optimizer='idbd', utility='fractional_propagated')),
-    # ('Adamw_weight_decay optimizer, fractional propagated',
+    # ('Adamw weight decay optimizer, fractional propagated',
     #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
-    ('idbd_rms_base_adam optimizer',
-     dict(optimizer='idbd_rms_base_adam')),
+    # # ('IDBD + fractional propagated',
+    # #  dict(optimizer='idbd', utility='fractional_propagated')),
+    # # ('Adamw_weight_decay optimizer, fractional propagated',
+    # #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
+
+    # ('idbd_rms_base_adam optimizer',
+    #  dict(optimizer='idbd_rms_base_adam')),
 
     ('idbd_rms_base_adam optimizer, fractional propagated',
      dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),

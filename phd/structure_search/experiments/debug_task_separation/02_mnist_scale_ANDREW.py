@@ -27,17 +27,24 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
 
 # N_HIDDEN_MAX = 100 # default
+# N_HIDDEN_MAX = 200 # default
+# N_HIDDEN_MAX = 200 # default
+# N_HIDDEN_MAX = 600 # default
+N_HIDDEN_MAX = 1200 # default
+# N_HIDDEN_MAX = 600 # default
 # N_HIDDEN_MAX = 1000
-N_HIDDEN_MAX = 500
+# N_HIDDEN_MAX = 200
+# N_HIDDEN_MAX = 100
 # MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
 MAX_CONNS = 128        # input connections per unit 
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 100      # = prune_frequency # ! default
+BLOCK_SIZE = 200      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
 # BLOCK_SIZE = 1000      # = prune_frequency
 # BLOCK_SIZE = 5000      # = prune_frequency
-BLOCK_SIZE = 10_000      # = prune_frequency
+# BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
 TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
@@ -47,21 +54,28 @@ PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
-# PRUNE_PER_BLOCK = 0 # Default  
-PRUNE_PER_BLOCK = 500
+PRUNE_PER_BLOCK = 0 # Default  
 # PRUNE_PER_BLOCK = 500
+# PRUNE_PER_BLOCK = 500
+# PRUNE_PER_BLOCK = 20_000
+# PRUNE_PER_BLOCK = 316 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 158 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 632 # full connected fractional utility reduction to 7k
+PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 300 
+
 
 SGD_LR = 1e-3
-ADAM_LR = 1e-3
-ADAMW_LR = 1e-3 # best on mnist
+ADAM_LR = 1e-4
+ADAMW_LR = 1e-4 # best on mnist
 # ADAMW_LR = 1e-4
 
 SEED = 42
 
 IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
-# WEIGHT_DECAY = 0.0
-WEIGHT_DECAY = 0.0001
+WEIGHT_DECAY = 0.0
+# WEIGHT_DECAY = 0.0001
 
 GENERATE_MODE = "FULL"
 # GENERATE_MODE = "RANDOM_SPARSE"
@@ -231,13 +245,49 @@ def compute_utility_fractional_propagated(Wi, Wo, Mi, Mo, x):
 
     return U_in, U_out
 
-def compute_utility(Wi, Wo, Mi, Mo, x, utility_mode):
+def edan_cross_entropy_loss_utility(h, W_out, logits, label):
+    """V0 utility, based on LOO effect on cross-entropy."""
+    # Counterfactual logits when each hidden unit i is removed
+    c = W_out * h[:, None]  # (in, out) — contribution of unit i to each logit
+    logits_wo = logits[None, :] - c  # (in, out)
+
+    # Log-probs with and without each unit
+    log_probs = jax.nn.log_softmax(logits)  # (out,)
+    log_probs_wo = jax.nn.log_softmax(logits_wo, axis=1)  # (in, out)
+
+    cross_entropy = -log_probs[label]
+    cross_entropy_wo = -log_probs_wo[:, label]
+
+    U = cross_entropy_wo - cross_entropy  # (in,)
+
+    return U
+
+def compute_utility_edan_cross_entropy(Wi, Wo, Mi, Mo, x, y):
+    """Per-connection utility from LOO cross-entropy, summed over tasks."""
+    raw, h = forward(Wi, Wo, Mi, Mo, x)
+    logits = raw.reshape(N_TASKS, NUM_CLASSES)
+    W_out_eff = Wo * Mo  # (OUTPUT_DIM, N_HIDDEN_MAX)
+
+    U_hidden = jnp.zeros(N_HIDDEN_MAX)
+    for t in range(N_TASKS):
+        # W_out_t: (N_HIDDEN_MAX, NUM_CLASSES) — contribution of each unit to each logit
+        W_out_t = W_out_eff[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, :].T
+        U_t = edan_cross_entropy_loss_utility(h, W_out_t, logits[t], y[t])
+        U_hidden = U_hidden + U_t
+
+    U_in = U_hidden[:, None] * Mi   # (N_HIDDEN_MAX, INPUT_DIM)
+    U_out = U_hidden[None, :] * Mo  # (OUTPUT_DIM, N_HIDDEN_MAX)
+    return U_in, U_out
+
+def compute_utility(Wi, Wo, Mi, Mo, x, utility_mode, y=None):
     if utility_mode == 'contribution':
         return compute_utility_contribution(Wi, Wo, Mi, Mo, x)
     if utility_mode == 'propagated':
         return compute_utility_propagated(Wi, Wo, Mi, Mo, x)
     if utility_mode == 'fractional_propagated':
         return compute_utility_fractional_propagated(Wi, Wo, Mi, Mo, x)
+    if utility_mode == 'edan_cross_entropy':
+        return compute_utility_edan_cross_entropy(Wi, Wo, Mi, Mo, x, y)
     raise ValueError(f"Unknown utility_mode: {utility_mode}")
 
 def _predict_only(Wi, Wo, Mi, Mo, x):
@@ -523,7 +573,7 @@ def train_block_optax(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc,
             Wi, Wo, Mi, Mo, x, y, optimizer, opt_state
         )
 
-        ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, utility_mode)
+        ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, utility_mode, y)
         Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
         Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
 
@@ -590,7 +640,7 @@ def measure_purity(Mi, Mo):
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
                    optimizer='sgd', n_hidden_init=10, permute_period=0,
-                   seed=SEED):
+                   seed=SEED, fully_connected_init=True):
     utility_mode = utility
     # all_out = (generation == 'all_output')
     all_out = True
@@ -615,9 +665,16 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     acc = jnp.array(0.0)
 
     # Generate initial units
-    for _ in range(n_hidden_init):
-        rng, gk = jax.random.split(rng)
-        Wi, Wo, Mi, Mo, _, _ = generate_unit(Wi, Wo, Mi, Mo, gk, all_out)
+    if fully_connected_init:
+        Mi = jnp.ones((N_HIDDEN_MAX, INPUT_DIM), dtype=jnp.int32)
+        Mo = jnp.ones((OUTPUT_DIM, N_HIDDEN_MAX), dtype=jnp.int32)
+        rng, wk = jax.random.split(rng)
+        bound = jnp.sqrt(3.0 / INPUT_DIM)
+        Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound)
+    else:
+        for _ in range(n_hidden_init):
+            rng, gk = jax.random.split(rng)
+            Wi, Wo, Mi, Mo, _, _ = generate_unit(Wi, Wo, Mi, Mo, gk, all_out)
 
     if optimizer == 'sgd':
         opt = optax.sgd(SGD_LR)
@@ -630,7 +687,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     elif optimizer == 'idbd_rms_base_adam':
         opt = optax_idbd(
             # meta_lr=0.0, 
-            meta_lr=1e-3, 
+            meta_lr=1e-4, 
             init_lr=ADAMW_LR, 
             base_optimizer='adamw',
             base_optimizer_params={'beta1': 0.9, 'beta2': 0.999}, 
@@ -713,12 +770,13 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         Ui = Ui * Mi
 
         # Generate to fill budget — negative budget exits while_loop immediately
-        gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
-        rng, gk = jax.random.split(rng)
-        if GENERATE_MODE == "RANDOM_SPARSE":
-            Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
-        else:
-            Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
+        if not fully_connected_init:
+            gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
+            rng, gk = jax.random.split(rng)
+            if GENERATE_MODE == "RANDOM_SPARSE":
+                Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
+            else:
+                Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
 
         # Reset optimizer memory for any connection whose mask changed
         opt_state = _reset_grown_connections(opt_state, Mi, Mo, old_Mi, old_Mo)
@@ -761,10 +819,12 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    # ('Adamw optimizer',
-    #  dict(optimizer='adamw')),
-    ('Adamw_weight_decay optimizer',
-     dict(optimizer='adamw_weight_decay')),
+    ('Adamw optimizer',
+     dict(optimizer='adamw')),
+    ('Adamw + edan cross-entropy utility',
+     dict(optimizer='adamw', utility='edan_cross_entropy')),
+    # ('Adamw_weight_decay optimizer',
+    #  dict(optimizer='adamw_weight_decay')),
     # ('Adamw weight decay optimizer, fractional propagated',
     #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
@@ -772,6 +832,12 @@ EXPERIMENTS = [
     # #  dict(optimizer='idbd', utility='fractional_propagated')),
     # # ('Adamw_weight_decay optimizer, fractional propagated',
     # #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
+
+
+    # ('idbd_rms optimizer',
+    #  dict(optimizer='idbd_rms')),
+    # ('idbd_rms optimizer, fractional propagated',
+    #  dict(optimizer='idbd_rms', utility='fractional_propagated')),
 
     # ('idbd_rms_base_adam optimizer',
     #  dict(optimizer='idbd_rms_base_adam')),

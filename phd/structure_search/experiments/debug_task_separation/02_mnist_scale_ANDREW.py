@@ -40,7 +40,8 @@ MAX_CONNS = 128        # input connections per unit
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 100      # = prune_frequency # ! default
-BLOCK_SIZE = 200      # = prune_frequency # ! default
+# BLOCK_SIZE = 200      # = prune_frequency # ! default
+BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
 # BLOCK_SIZE = 1000      # = prune_frequency
 # BLOCK_SIZE = 5000      # = prune_frequency
@@ -54,14 +55,17 @@ PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
-PRUNE_PER_BLOCK = 0 # Default  
+# PRUNE_PER_BLOCK = 0 # Default  
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 20_000
 # PRUNE_PER_BLOCK = 316 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 158 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 632 # full connected fractional utility reduction to 7k
-PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 1200 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 2400 # full connected fractional utility reduction to 7k
+PRUNE_PER_BLOCK = 10_000 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 300 
 
 
@@ -70,7 +74,7 @@ ADAM_LR = 1e-4
 ADAMW_LR = 1e-4 # best on mnist
 # ADAMW_LR = 1e-4
 
-SEED = 42
+SEED = 43
 
 IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
@@ -79,6 +83,11 @@ WEIGHT_DECAY = 0.0
 
 GENERATE_MODE = "FULL"
 # GENERATE_MODE = "RANDOM_SPARSE"
+FC_ISOLATED_DEFAULT = False
+# FC_ISOLATED_DEFAULT = True # for fully connected, sets whether cross-task connections are prevented
+
+# SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
+SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
 
 
 
@@ -633,6 +642,63 @@ def measure_purity(Mi, Mo):
     print(f'  >>> Purity: in={mip:.3f} out={mop:.3f} | Entropy: in={mie:.3f}')
     return mip, mop, mie
 
+
+@jax.jit
+def _eval_per_task_loss_full(Wi, Wo, Mi, Mo, imgs, lbls):
+    """Per-task cross-entropy loss with all inputs present."""
+    def one(x, y):
+        raw, _ = forward(Wi, Wo, Mi, Mo, x)
+        logits = raw.reshape(N_TASKS, NUM_CLASSES)
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        return jnp.array([
+            -jnp.sum(jax.nn.one_hot(y[t], NUM_CLASSES) * log_probs[t])
+            for t in range(N_TASKS)
+        ])
+    return jax.vmap(one)(imgs, lbls).mean(axis=0)
+
+
+@partial(jax.jit, static_argnames=('active_task',))
+def _eval_task_loss_inputs_only(Wi, Wo, Mi, Mo, imgs, lbls, active_task):
+    """Cross-entropy for active_task with all other tasks' inputs zeroed."""
+    task_mask = jnp.zeros(INPUT_DIM).at[
+        active_task * INPUT_PER_TASK:(active_task + 1) * INPUT_PER_TASK
+    ].set(1.0)
+
+    def one(x, y):
+        raw, _ = forward(Wi, Wo, Mi, Mo, x * task_mask)
+        logits = raw.reshape(N_TASKS, NUM_CLASSES)
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        return -jnp.sum(jax.nn.one_hot(y[active_task], NUM_CLASSES) * log_probs[active_task])
+
+    return jax.vmap(one)(imgs, lbls).mean()
+
+
+def run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_full_losses):
+    """Single-task input validation.
+
+    For each task t: compare its loss with full inputs vs with other tasks' inputs zeroed.
+    Uses the same batch as per_task_full_losses so the comparison is apples-to-apples.
+    Δ ≈ 0 means the task does not rely on the other tasks' inputs at all.
+    Δ > 0 means removing the other inputs hurts — the task was using them as implicit signal.
+    Δ < 0 means removing the other inputs helps — they were acting as noise/interference.
+    """
+    print('\n  --- Single-Task Input Validation ---')
+
+    imgs_j = jnp.array(test_imgs)
+    lbls_j = jnp.array(test_lbls)
+
+    task_results = []
+    for t in range(N_TASKS):
+        loss_isolated = float(_eval_task_loss_inputs_only(Wi, Wo, Mi, Mo, imgs_j, lbls_j, t))
+        loss_full = float(per_task_full_losses[t])
+        delta = loss_isolated - loss_full
+        task_results.append((loss_full, loss_isolated, delta))
+        print(f'  Task {t}:  full_inputs={loss_full:.4f}  own_inputs_only={loss_isolated:.4f}  '
+              f'Δ={delta:+.4f}{"  (relies on other inputs)" if delta > 0.01 else ""}')
+
+    print()
+    return task_results
+
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENT RUNNER
 # ══════════════════════════════════════════════════════════════════════
@@ -640,7 +706,8 @@ def measure_purity(Mi, Mo):
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
                    optimizer='sgd', n_hidden_init=10, permute_period=0,
-                   seed=SEED, fully_connected_init=True):
+                   seed=SEED, fully_connected_init=True, fc_isolated=FC_ISOLATED_DEFAULT,
+                   skip_last_cull=SKIP_LAST_CULL):
     utility_mode = utility
     # all_out = (generation == 'all_output')
     all_out = True
@@ -649,7 +716,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     print(f'\n{"=" * 65}')
     print(f'{name}')
     print(f'  utility={utility} gen={generation} opt={optimizer} '
-          f'init={n_hidden_init} permute={permute_period}')
+          f'init={n_hidden_init} permute={permute_period} fc_isolated={fc_isolated}')
 
     stream = ParallelMNIST(mnist_images, mnist_labels, seed=seed,
                            permute_period=permute_period)
@@ -666,11 +733,26 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 
     # Generate initial units
     if fully_connected_init:
-        Mi = jnp.ones((N_HIDDEN_MAX, INPUT_DIM), dtype=jnp.int32)
-        Mo = jnp.ones((OUTPUT_DIM, N_HIDDEN_MAX), dtype=jnp.int32)
-        rng, wk = jax.random.split(rng)
-        bound = jnp.sqrt(3.0 / INPUT_DIM)
-        Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound)
+        if fc_isolated:
+            # Block-diagonal: split N_HIDDEN_MAX evenly, no cross-task connections
+            units_per_task = N_HIDDEN_MAX // N_TASKS
+            Mi_np = np.zeros((N_HIDDEN_MAX, INPUT_DIM), dtype=np.int32)
+            Mo_np = np.zeros((OUTPUT_DIM, N_HIDDEN_MAX), dtype=np.int32)
+            for t in range(N_TASKS):
+                h0, h1 = t * units_per_task, (t + 1) * units_per_task
+                Mi_np[h0:h1, t * INPUT_PER_TASK:(t + 1) * INPUT_PER_TASK] = 1
+                Mo_np[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h0:h1] = 1
+            Mi = jnp.array(Mi_np)
+            Mo = jnp.array(Mo_np)
+            rng, wk = jax.random.split(rng)
+            bound = jnp.sqrt(3.0 / INPUT_PER_TASK)
+            Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound) * Mi
+        else:
+            Mi = jnp.ones((N_HIDDEN_MAX, INPUT_DIM), dtype=jnp.int32)
+            Mo = jnp.ones((OUTPUT_DIM, N_HIDDEN_MAX), dtype=jnp.int32)
+            rng, wk = jax.random.split(rng)
+            bound = jnp.sqrt(3.0 / INPUT_DIM)
+            Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound)
     else:
         for _ in range(n_hidden_init):
             rng, gk = jax.random.split(rng)
@@ -755,28 +837,33 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             Ui, Uo, acc, opt_state, opt, utility_mode, BLOCK_SIZE
         )
 
+        is_last_block = (bi == n_blocks - 1)
+
         # Batch prune — stay on device, no int() sync
         old_Mi, old_Mo = Mi, Mo
-        ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK),
-                          (Mi.sum() + Mo.sum()).astype(jnp.int32))
-        rng, pk = jax.random.split(rng)
-        Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, ntp, pk)
-        Ui = Ui * Mi
-        Uo = Uo * Mo
-        acc = acc - ntp.astype(jnp.float32)
+        if not (skip_last_cull and is_last_block):
+            ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK),
+                              (Mi.sum() + Mo.sum()).astype(jnp.int32))
+            rng, pk = jax.random.split(rng)
+            Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, ntp, pk)
+            Ui = Ui * Mi
+            Uo = Uo * Mo
+            acc = acc - ntp.astype(jnp.float32)
 
-        # Cleanup dead units
-        Mi, Mo = cleanup_dead(Mi, Mo)
-        Ui = Ui * Mi
+            # Cleanup dead units
+            Mi, Mo = cleanup_dead(Mi, Mo)
+            Ui = Ui * Mi
 
-        # Generate to fill budget — negative budget exits while_loop immediately
-        if not fully_connected_init:
-            gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
-            rng, gk = jax.random.split(rng)
-            if GENERATE_MODE == "RANDOM_SPARSE":
-                Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
-            else:
-                Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
+            # Generate to fill budget — negative budget exits while_loop immediately
+            if not fully_connected_init:
+                gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
+                rng, gk = jax.random.split(rng)
+                if GENERATE_MODE == "RANDOM_SPARSE":
+                    Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
+                else:
+                    Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
+        else:
+            ntp = jnp.int32(0)
 
         # Reset optimizer memory for any connection whose mask changed
         opt_state = _reset_grown_connections(opt_state, Mi, Mo, old_Mi, old_Mo)
@@ -790,20 +877,20 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     elapsed = time.time() - t0
     print(f'  Done in {elapsed:.1f}s')
 
-    # Quick loss check
-    test_imgs, test_lbls = stream.sample_block(200)
+    # Use one shared batch for both final loss and single-task validation
+    test_imgs, test_lbls = stream.sample_block(500)
+    imgs_j, lbls_j = jnp.array(test_imgs), jnp.array(test_lbls)
 
-    @jax.jit
-    def eval_loss(Wi, Wo, Mi, Mo, imgs, lbls):
-        def one(x, y):
-            return loss_ce(Wi, Wo, Mi, Mo, x, y)
-        return jax.vmap(one)(imgs, lbls).mean()
-
-    final_loss = float(eval_loss(Wi, Wo, Mi, Mo, jnp.array(test_imgs), jnp.array(test_lbls)))
-    print(f'  Final loss: {final_loss:.4f}')
+    per_task_losses = np.array(_eval_per_task_loss_full(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
+    final_loss = float(per_task_losses.mean())
+    per_task_str = '  '.join(f'T{t}={per_task_losses[t]:.4f}' for t in range(N_TASKS))
+    print(f'  Final loss: {final_loss:.4f}  (per task: {per_task_str})')
 
     mip, mop, mie = measure_purity(Mi, Mo)
-    return mip, mop, mie, final_loss
+
+    task_val = run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_losses)
+
+    return mip, mop, mie, final_loss, task_val
 
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENTS
@@ -819,13 +906,15 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    ('Adamw optimizer',
-     dict(optimizer='adamw')),
-    ('Adamw + edan cross-entropy utility',
-     dict(optimizer='adamw', utility='edan_cross_entropy')),
+    # ('Adamw optimizer',
+    #  dict(optimizer='adamw')),
+    # ('Adamw + edan cross-entropy utility',
+    #  dict(optimizer='adamw', utility='edan_cross_entropy')),
     # ('Adamw_weight_decay optimizer',
     #  dict(optimizer='adamw_weight_decay')),
-    # ('Adamw weight decay optimizer, fractional propagated',
+    # ('Adamw_weight_decay + edan cross-entropy utility',
+    #  dict(optimizer='adamw_weight_decay', utility='edan_cross_entropy')),
+    # ('Adamw_weight_decay + fractional propagated',
     #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
     # # ('IDBD + fractional propagated',
@@ -842,6 +931,12 @@ EXPERIMENTS = [
     # ('idbd_rms_base_adam optimizer',
     #  dict(optimizer='idbd_rms_base_adam')),
 
+
+    # ('idbd_rms_base_adam optimizer + contribution',
+    #  dict(optimizer='idbd_rms_base_adam')),
+
+    ('idbd_rms_base_adam optimizer + edan cross-entropy',
+     dict(optimizer='idbd_rms_base_adam', utility='edan_cross_entropy')),
     ('idbd_rms_base_adam optimizer, fractional propagated',
      dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
     # ('2. Propagated utility',
@@ -880,14 +975,36 @@ if __name__ == '__main__':
 
     results = {}
     for name, kw in EXPERIMENTS:
-        ip, op, ie, fl = run_experiment(name, mnist_images, mnist_labels, **kw)
-        results[name] = (ip, op, ie, fl)
+        ip, op, ie, fl, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
+        results[name] = (ip, op, ie, fl, task_val)
 
     print(f'\n{"=" * 85}')
     print('SUMMARY')
     print(f'{"=" * 85}')
     print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8}')
     print('-' * 85)
-    for name, (ip, op, ie, fl) in results.items():
+    for name, (ip, op, ie, fl, task_val) in results.items():
         flag = ' <--' if ip < 0.8 else ''
         print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f} {fl:>8.4f}{flag}')
+
+    print(f'\n{"=" * 85}')
+    print('SINGLE-TASK INPUT VALIDATION SUMMARY')
+    print(f'  (Δloss = single-task loss minus full-input loss; pure network → Δ≈0, other_mag≈0)')
+    print(f'{"=" * 85}')
+    for name, (ip, op, ie, fl, task_val) in results.items():
+        print(f'\n  {name}')
+        for t, (loss_full, loss_isolated, delta) in enumerate(task_val):
+            flag = '  <-- relies on other inputs' if delta > 0.01 else ''
+            print(f'    Task {t}:  full={loss_full:.4f}  isolated={loss_isolated:.4f}  '
+                  f'Δ={delta:+.4f}{flag}')
+            # delta of 0 -> pure - the task doesn't rely on the other tasks
+            # inputs an an implicit bias own_mag = means |logit| across the 10
+            # output classes for the active task's head. other_mags = same thing
+            # for the inactive task's head, whose inputs were all zeroed.
+            # log_softmax produces uniform predictions (random baseline) when
+            # all logits are near zero. A large mean |logit| means the head is
+            # making confident, peaked predictions — not random.
+
+
+
+

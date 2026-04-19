@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python3 -c ' *)",
+      "Bash(jupyter nbconvert *)"
     ]
   }
 }

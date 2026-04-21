@@ -58,6 +58,7 @@ class StepUtilityMode(IntEnum):
     SIGNED_SIGNED      = 2  # signed input + signed output
     SIGNED_CONTRIB     = 3  # signed input + contribution output (scaled)
     SHIFTED_SIGNED     = 4  # shifted-signed (mode 4)
+    LOO_MSE            = 5  # leave-one-out MSE utility
 
 
 class CullUtilityMode(IntEnum):
@@ -77,7 +78,11 @@ class CullUtilityMode(IntEnum):
 MLFLOW_TRACKING_URI = "http://localhost:5000/"
 MLFLOW_EXPERIMENT_NAME = "pruning_generation_idbd_alpha"
 # RUN_NAME = "idbd_70steps_seed2133"  # set to None to use auto-generated name
-RUN_NAME = "v1_fractional_propagated"  # set to None to use auto-generated name
+# RUN_NAME = "LINEAR: PROPAGATED only"  # set to None to use auto-generated name
+# RUN_NAME = "LINEAR: PROPAGATED HEBBIAN"  # set to None to use auto-generated name
+RUN_NAME = "seed421 LINEAR: PROPAGATED only"  # set to None to use auto-generated name
+# RUN_NAME = "seed421 20ksteps LINEAR: PROPAGATED HEBBIAN"  # set to None to use auto-generated name
+# RUN_NAME = "seed421 20ksteps LINEAR: CONTRIBUTION only"  # set to None to use auto-generated name
 
 # ---------------------------------------------------------------------------
 # Experiment hyperparameters
@@ -94,7 +99,8 @@ OUTPUT_DIM = N_OUTPUTS_PER_TASK * N_TASKS
 # ENABLE_GEN = True # ! doesn't do anything
 # USE_HEBBIAN_FOR_CULL = True # ! doesn't do anything
 OPTIMIZER_NAME = "idbd"  # options: "idbd", "sgd"
-TRAIN_STEPS_PER_PRUNE = 5_000
+# TRAIN_STEPS_PER_PRUNE = 5_000
+TRAIN_STEPS_PER_PRUNE = 20_000
 # TRAIN_STEPS_PER_PRUNE = 50_000
 # TRAIN_STEPS_PER_PRUNE = 500
 # TRAIN_STEPS_PER_PRUNE = 500
@@ -113,13 +119,18 @@ N_PRUNE_PER_STEP = 1      # connections to remove each prune event (default = 1,
 PRUNES_PER_CHANGE = 0     # 0 = stationary, >0 = change one subtask every N prunes
 RANK1_TARGETS = False
 # STEP_UTILITY_MODE = StepUtilityMode.CONTRIBUTION
+# STEP_UTILITY_MODE = StepUtilityMode.LOO_MSE
 STEP_UTILITY_MODE = StepUtilityMode.PROPAGATED
+
+# CULL_UTILITY_MODE = CullUtilityMode.HEBBIAN
+# CULL_UTILITY_MODE = CullUtilityMode.PROP_TIMES_HEBBIAN
 CULL_UTILITY_MODE = CullUtilityMode.ORIGINAL
 # LEAKY_RELU_NEGATIVE_SLOPE = 0.01 # ! default
-LEAKY_RELU_NEGATIVE_SLOPE = 0.1 # ! bit easier to see
-# LEAKY_RELU_NEGATIVE_SLOPE = 1.0
+# LEAKY_RELU_NEGATIVE_SLOPE = 0.1 # ! bit easier to see
+LEAKY_RELU_NEGATIVE_SLOPE = 1.0
 
-SEED = 2133470219 # int(np.random.randint(0, 2**31)) # 1963565763 (correlated hidden units) # 1793333517 #
+# SEED = 2133470219 # int(np.random.randint(0, 2**31)) # 1963565763 (correlated hidden units) # 1793333517 #
+SEED = 421 # int(np.random.randint(0, 2**31)) # 1963565763 (correlated hidden units) # 1793333517 #
 print(f'Seed: {SEED}')
 
 
@@ -347,25 +358,52 @@ def compute_step_utility_shifted_signed(W_in, W_out, M_in, M_out, x, y):
 
     return U_in, U_out
 
+def edan_mse_loss_utility(h, W_out, y_hat, y):
+    """LOO utility based on MSE loss — MSE analogue of edan_cross_entropy_loss_utility.
+
+    For each hidden unit i, computes how much the MSE increases when unit i is removed.
+    """
+    # Contribution of unit i to each output: (O, H)
+    c = W_out * h[None, :]
+    # Counterfactual predictions without each unit: (O, H)
+    y_hat_wo = y_hat[:, None] - c
+
+    mse = jnp.mean((y_hat - y) ** 2)
+    mse_wo = jnp.mean((y_hat_wo - y[:, None]) ** 2, axis=0)  # (H,)
+
+    U = mse_wo - mse  # (H,)
+    return U
+
+
 def compute_step_utility(W_in, W_out, M_in, M_out, x, y, utility_mode):
     y_hat, h = forward(W_in, W_out, M_in, M_out, x)
-    # U_in_c, U_out_c = compute_step_utility_contribution(W_in, W_out, M_in, M_out, x)
-    U_in_c, U_out_c, nothing = compute_step_utility_fractional_propagated(W_in, W_out, M_in, M_out, x)
+    U_in_contrib, U_out_contrib = compute_step_utility_contribution(W_in, W_out, M_in, M_out, x)
+    U_in_frac, U_out_frac, _ = compute_step_utility_fractional_propagated(W_in, W_out, M_in, M_out, x)
     U_out_s = compute_signed_output_utility(W_out, M_out, h, y, y_hat)
     U_in_s = compute_signed_input_utility(W_in, W_out, M_in, M_out, x, y, y_hat)
-    U_out = jnp.where(utility_mode <= 1, U_out_c, U_out_s)
-    out_total = (U_out * M_out).sum(axis=0)
-    in_total_c = (U_in_c * M_in).sum(axis=1)
-    scale_c = out_total / jnp.maximum(in_total_c, 1e-10)
-    in_total_s = (U_in_s * M_in).sum(axis=1)
-    scale_s = out_total / jnp.maximum(jnp.abs(in_total_s), 1e-10)
     U_in_ss, U_out_ss = compute_step_utility_shifted_signed(W_in, W_out, M_in, M_out, x, y)
-    U_in = jnp.where(utility_mode == 0, U_in_c,
-           jnp.where(utility_mode == 1, U_in_c * scale_c[:, None],
-           jnp.where(utility_mode == 2, U_in_s * scale_s[:, None],
-           jnp.where(utility_mode == 3, U_in_c * scale_c[:, None],
-                                         U_in_ss))))
-    U_out = jnp.where(utility_mode == 4, U_out_ss, U_out)
+    # LOO MSE: per-unit score broadcast to all connections of that unit
+    U_loo = edan_mse_loss_utility(h, W_out * M_out, y_hat, y)  # (H,)
+    U_in_loo  = U_loo[:, None] * jnp.ones_like(W_in)   # (H, I)
+    U_out_loo = U_loo[None, :] * jnp.ones_like(W_out)  # (O, H)
+    # Scale signed input utility to match output totals for modes that combine mismatched signals
+    in_total_s = (U_in_s * M_in).sum(axis=1)
+    out_total_s = (U_out_s * M_out).sum(axis=0)
+    scale_ss = out_total_s / jnp.maximum(jnp.abs(in_total_s), 1e-10)
+    out_total_contrib = (U_out_contrib * M_out).sum(axis=0)
+    scale_sc = out_total_contrib / jnp.maximum(jnp.abs(in_total_s), 1e-10)
+    U_in = jnp.where(utility_mode == StepUtilityMode.CONTRIBUTION,   U_in_contrib,
+           jnp.where(utility_mode == StepUtilityMode.PROPAGATED,     U_in_frac,
+           jnp.where(utility_mode == StepUtilityMode.SIGNED_SIGNED,  U_in_s * scale_ss[:, None],
+           jnp.where(utility_mode == StepUtilityMode.SIGNED_CONTRIB, U_in_s * scale_sc[:, None],
+           jnp.where(utility_mode == StepUtilityMode.SHIFTED_SIGNED, U_in_ss,
+                                                                      U_in_loo)))))
+    U_out = jnp.where(utility_mode == StepUtilityMode.CONTRIBUTION,   U_out_contrib,
+            jnp.where(utility_mode == StepUtilityMode.PROPAGATED,     U_out_frac,
+            jnp.where(utility_mode == StepUtilityMode.SIGNED_SIGNED,  U_out_s,
+            jnp.where(utility_mode == StepUtilityMode.SIGNED_CONTRIB, U_out_contrib,
+            jnp.where(utility_mode == StepUtilityMode.SHIFTED_SIGNED, U_out_ss,
+                                                                       U_out_loo)))))
     return U_in * M_in, U_out * M_out
 
 def _predict_only(W_in, W_out, M_in, M_out, x):

@@ -26,22 +26,24 @@ INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
 OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
 
+# fully_connected_init = False
 # N_HIDDEN_MAX = 100 # default
 # N_HIDDEN_MAX = 200 # default
+N_HIDDEN_MAX = 1000 # default
 # N_HIDDEN_MAX = 200 # default
 # N_HIDDEN_MAX = 600 # default
-N_HIDDEN_MAX = 1200 # default
+# N_HIDDEN_MAX = 1200 # default
 # N_HIDDEN_MAX = 600 # default
 # N_HIDDEN_MAX = 1000
 # N_HIDDEN_MAX = 200
 # N_HIDDEN_MAX = 100
-# MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
-MAX_CONNS = 128        # input connections per unit 
+MAX_CONNS = 128        # input connections per unit (half of script's 128) # default
+# MAX_CONNS = 128        # input connections per unit 
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
-# BLOCK_SIZE = 100      # = prune_frequency # ! default
+BLOCK_SIZE = 500      # = prune_frequency # ! default
 # BLOCK_SIZE = 200      # = prune_frequency # ! default
-BLOCK_SIZE = 1000      # = prune_frequency # ! default
+# BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
 # BLOCK_SIZE = 1000      # = prune_frequency
 # BLOCK_SIZE = 5000      # = prune_frequency
@@ -56,6 +58,9 @@ EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20
 
 # PRUNE_PER_BLOCK = 0 # Default  
+# PRUNE_PER_BLOCK = 200 # Default  
+# PRUNE_PER_BLOCK = 300 
+PRUNE_PER_BLOCK = 1000
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 20_000
@@ -65,7 +70,7 @@ MAX_GEN_PER_STEP = 20
 # PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 1200 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 2400 # full connected fractional utility reduction to 7k
-PRUNE_PER_BLOCK = 10_000 # full connected fractional utility reduction to 7k
+# PRUNE_PER_BLOCK = 10_000 # full connected fractional utility reduction to 7k
 # PRUNE_PER_BLOCK = 300 
 
 
@@ -81,6 +86,23 @@ IDBD_META_LR = 1e-3
 WEIGHT_DECAY = 0.0
 # WEIGHT_DECAY = 0.0001
 
+
+### ! Below settings for I guess a default culling
+# N_HIDDEN_MAX = 200 # default
+# MAX_CONNS = 128        # input connections per unit 
+
+# BLOCK_SIZE = 200      # = prune_frequency # ! default
+# TOTAL_STEPS = 100_000
+# CONNECTION_BUDGET = 10000
+# PRUNE_RATE = 0.01 # default
+# EMA_DECAY = 0.999
+# MAX_GEN_PER_STEP = 20
+# PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
+# SEED = 42
+# IDBD_INIT_LR = 1e-6
+# IDBD_META_LR = 1e-3
+# WEIGHT_DECAY = 0.0
+
 GENERATE_MODE = "FULL"
 # GENERATE_MODE = "RANDOM_SPARSE"
 FC_ISOLATED_DEFAULT = False
@@ -88,6 +110,35 @@ FC_ISOLATED_DEFAULT = False
 
 # SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
 SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
+
+AUX_HEBBIAN_MODE_DEFAULT = 'none'
+# AUX_HEBBIAN_MODE_DEFAULT = 'post_activation'
+CULL_UTILITY_MODE_DEFAULT = 'original'
+# CULL_UTILITY_MODE_DEFAULT = 'product'
+# options: 'original', 'hebbian', 'product', 'sum'
+
+
+
+# EDAN_DEFAULT_SETTINGS:
+N_TASKS = 2
+NUM_CLASSES = 10
+INPUT_PER_TASK = 784
+INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
+OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
+
+N_HIDDEN_MAX = 100
+MAX_CONNS = 64        # input connections per unit (half of script's 128)
+
+BLOCK_SIZE = 100      # = prune_frequency
+TOTAL_STEPS = 100_000
+CONNECTION_BUDGET = 3000
+PRUNE_RATE = 0.0001
+EMA_DECAY = 0.999
+MAX_GEN_PER_STEP = 20
+
+SGD_LR = 1e-3
+ADAM_LR = 1e-3
+SEED = 42
 
 
 
@@ -287,6 +338,28 @@ def compute_utility_edan_cross_entropy(Wi, Wo, Mi, Mo, x, y):
     U_in = U_hidden[:, None] * Mi   # (N_HIDDEN_MAX, INPUT_DIM)
     U_out = U_hidden[None, :] * Mo  # (OUTPUT_DIM, N_HIDDEN_MAX)
     return U_in, U_out
+
+def compute_auxiliary_hebbian_utility(Wi, Wo, Mi, Mo, x, U_in, U_out, aux_hebbian_mode='post_activation'):
+    """Build an auxiliary Hebbian-style utility from the current base utility."""
+    if aux_hebbian_mode in (None, 'none'):
+        return jnp.zeros_like(U_in), jnp.zeros_like(U_out)
+    if aux_hebbian_mode == 'post_activation':
+        _, h = forward(Wi, Wo, Mi, Mo, x)
+        A_in = jnp.abs(h)[:, None] * U_in * Mi
+        A_out = jnp.abs(h)[None, :] * U_out * Mo
+        return A_in, A_out
+    raise ValueError(f"Unknown aux_hebbian_mode: {aux_hebbian_mode}")
+
+def select_cull_utility(U_in, U_out, H_in, H_out, cull_utility_mode='original'):
+    if cull_utility_mode == 'original':
+        return U_in, U_out
+    if cull_utility_mode == 'hebbian':
+        return H_in, H_out
+    if cull_utility_mode == 'product':
+        return U_in * H_in, U_out * H_out
+    if cull_utility_mode == 'sum':
+        return U_in + H_in, U_out + H_out
+    raise ValueError(f"Unknown cull_utility_mode: {cull_utility_mode}")
 
 def compute_utility(Wi, Wo, Mi, Mo, x, utility_mode, y=None):
     if utility_mode == 'contribution':
@@ -568,14 +641,14 @@ _adam = optax.adam(ADAM_LR)
 #     return Wi, Wo, Ui, Uo, acc, ost
 
 
-@partial(jax.jit, static_argnames=('optimizer', 'utility_mode', 'n_steps'))
-def train_block_optax(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc,
-                      opt_state, optimizer, utility_mode, n_steps):
+@partial(jax.jit, static_argnames=('optimizer', 'utility_mode', 'aux_hebbian_mode', 'n_steps'))
+def train_block_optax(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, Hi, Ho, acc,
+                      opt_state, optimizer, utility_mode, aux_hebbian_mode, n_steps):
     n_active = (Mi.sum() + Mo.sum()).astype(jnp.float32)
     acc_inc = PRUNE_RATE * n_active
 
     def body(carry, data):
-        Wi, Wo, Ui, Uo, acc, opt_state = carry
+        Wi, Wo, Ui, Uo, Hi, Ho, acc, opt_state = carry
         x, y = data
 
         Wi, Wo, opt_state = _train_step_optax(
@@ -583,15 +656,20 @@ def train_block_optax(Wi, Wo, Mi, Mo, images, labels, Ui, Uo, acc,
         )
 
         ui, uo = compute_utility(Wi, Wo, Mi, Mo, x, utility_mode, y)
+        hi, ho = compute_auxiliary_hebbian_utility(
+            Wi, Wo, Mi, Mo, x, ui, uo, aux_hebbian_mode
+        )
         Ui = EMA_DECAY * Ui + (1 - EMA_DECAY) * ui
         Uo = EMA_DECAY * Uo + (1 - EMA_DECAY) * uo
+        Hi = EMA_DECAY * Hi + (1 - EMA_DECAY) * hi
+        Ho = EMA_DECAY * Ho + (1 - EMA_DECAY) * ho
 
-        return (Wi, Wo, Ui, Uo, acc + acc_inc, opt_state), None
+        return (Wi, Wo, Ui, Uo, Hi, Ho, acc + acc_inc, opt_state), None
 
-    (Wi, Wo, Ui, Uo, acc, opt_state), _ = jax.lax.scan(
-        body, (Wi, Wo, Ui, Uo, acc, opt_state), (images, labels)
+    (Wi, Wo, Ui, Uo, Hi, Ho, acc, opt_state), _ = jax.lax.scan(
+        body, (Wi, Wo, Ui, Uo, Hi, Ho, acc, opt_state), (images, labels)
     )
-    return Wi, Wo, Ui, Uo, acc, opt_state
+    return Wi, Wo, Ui, Uo, Hi, Ho, acc, opt_state
 
 # ══════════════════════════════════════════════════════════════════════
 # METRIC
@@ -706,8 +784,10 @@ def run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_fu
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
                    optimizer='sgd', n_hidden_init=10, permute_period=0,
-                   seed=SEED, fully_connected_init=True, fc_isolated=FC_ISOLATED_DEFAULT,
-                   skip_last_cull=SKIP_LAST_CULL):
+                   seed=SEED, fully_connected_init=False, fc_isolated=FC_ISOLATED_DEFAULT,
+                   skip_last_cull=SKIP_LAST_CULL,
+                   aux_hebbian_mode=AUX_HEBBIAN_MODE_DEFAULT,
+                   cull_utility_mode=CULL_UTILITY_MODE_DEFAULT):
     utility_mode = utility
     # all_out = (generation == 'all_output')
     all_out = True
@@ -715,8 +795,9 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 
     print(f'\n{"=" * 65}')
     print(f'{name}')
-    print(f'  utility={utility} gen={generation} opt={optimizer} '
-          f'init={n_hidden_init} permute={permute_period} fc_isolated={fc_isolated}')
+    print(f'  utility={utility} aux_hebbian={aux_hebbian_mode} cull={cull_utility_mode} '
+          f'gen={generation} opt={optimizer} init={n_hidden_init} '
+          f'permute={permute_period} fc_isolated={fc_isolated}')
 
     stream = ParallelMNIST(mnist_images, mnist_labels, seed=seed,
                            permute_period=permute_period)
@@ -729,6 +810,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     Mo = jnp.zeros((OUTPUT_DIM, N_HIDDEN_MAX), dtype=jnp.int32)
     Ui = jnp.zeros((N_HIDDEN_MAX, INPUT_DIM))
     Uo = jnp.zeros((OUTPUT_DIM, N_HIDDEN_MAX))
+    Hi = jnp.zeros((N_HIDDEN_MAX, INPUT_DIM))
+    Ho = jnp.zeros((OUTPUT_DIM, N_HIDDEN_MAX))
     acc = jnp.array(0.0)
 
     # Generate initial units
@@ -832,9 +915,9 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         #     Wi, Wo, Ui, Uo, acc = train_block_sgd(
         #         Wi, Wo, Mi, Mo, imgs_j, lbls_j, Ui, Uo, acc,
         #         use_prop, BLOCK_SIZE)
-        Wi, Wo, Ui, Uo, acc, opt_state = train_block_optax(
+        Wi, Wo, Ui, Uo, Hi, Ho, acc, opt_state = train_block_optax(
             Wi, Wo, Mi, Mo, imgs_j, lbls_j,
-            Ui, Uo, acc, opt_state, opt, utility_mode, BLOCK_SIZE
+            Ui, Uo, Hi, Ho, acc, opt_state, opt, utility_mode, aux_hebbian_mode, BLOCK_SIZE
         )
 
         is_last_block = (bi == n_blocks - 1)
@@ -845,14 +928,20 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK),
                               (Mi.sum() + Mo.sum()).astype(jnp.int32))
             rng, pk = jax.random.split(rng)
-            Mi, Mo = batch_prune(Ui, Uo, Mi, Mo, ntp, pk)
+            cull_Ui, cull_Uo = select_cull_utility(Ui, Uo, Hi, Ho, cull_utility_mode)
+            Mi, Mo = batch_prune(cull_Ui, cull_Uo, Mi, Mo, ntp, pk)
             Ui = Ui * Mi
             Uo = Uo * Mo
+            Hi = Hi * Mi
+            Ho = Ho * Mo
             acc = acc - ntp.astype(jnp.float32)
 
             # Cleanup dead units
             Mi, Mo = cleanup_dead(Mi, Mo)
             Ui = Ui * Mi
+            Hi = Hi * Mi
+            Uo = Uo * Mo
+            Ho = Ho * Mo
 
             # Generate to fill budget — negative budget exits while_loop immediately
             if not fully_connected_init:
@@ -932,13 +1021,43 @@ EXPERIMENTS = [
     #  dict(optimizer='idbd_rms_base_adam')),
 
 
-    # ('idbd_rms_base_adam optimizer + contribution',
-    #  dict(optimizer='idbd_rms_base_adam')),
+    ('idbd_rms_base_adam optimizer + contribution',
+     dict(optimizer='idbd_rms_base_adam')),
 
-    ('idbd_rms_base_adam optimizer + edan cross-entropy',
-     dict(optimizer='idbd_rms_base_adam', utility='edan_cross_entropy')),
-    ('idbd_rms_base_adam optimizer, fractional propagated',
-     dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
+    # # ('idbd_rms_base_adam optimizer + edan cross-entropy',
+    # #  dict(optimizer='idbd_rms_base_adam', utility='edan_cross_entropy')),
+    # ('idbd_rms_base_adam optimizer, fractional propagated',
+    #  dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
+
+    ('idbd_rms_base_adam optimizer, fractional propagated, hebbian product',
+     dict(
+    optimizer='idbd_rms_base_adam',
+    utility='fractional_propagated',
+    aux_hebbian_mode='post_activation',
+    cull_utility_mode='product',
+    )),
+#     ('idbd_rms_base_adam optimizer, fractional propagated, hebbian only',
+#      dict(
+#     optimizer='idbd_rms_base_adam',
+#     utility='fractional_propagated',
+#     aux_hebbian_mode='post_activation',
+#     cull_utility_mode='hebbian',
+# )),
+
+#     ('idbd_rms_base_adam optimizer, contribution, hebbian only',
+#      dict(
+#     optimizer='idbd_rms_base_adam',
+#     aux_hebbian_mode='post_activation',
+#     cull_utility_mode='hebbian',
+# )),
+
+#     ('idbd_rms_base_adam optimizer, contribution, hebbian product',
+#      dict(
+#     optimizer='idbd_rms_base_adam',
+#     aux_hebbian_mode='post_activation',
+#     cull_utility_mode='product',
+# )),
+
     # ('2. Propagated utility',
     #  dict(utility='propagated')),
     # ('3. Single output gen',

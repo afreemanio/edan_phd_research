@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import mlflow
 from phd.jax_core.optimizers.idbd_jacobian import IDBDState, optax_idbd
 from functools import partial
 import time
@@ -29,19 +30,27 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 # fully_connected_init = False
 # N_HIDDEN_MAX = 100 # default
 # N_HIDDEN_MAX = 200 # default
-N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 200 # default
-# N_HIDDEN_MAX = 600 # default
+N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 1200 # default
 # N_HIDDEN_MAX = 600 # default
 # N_HIDDEN_MAX = 1000
 # N_HIDDEN_MAX = 200
 # N_HIDDEN_MAX = 100
-MAX_CONNS = 128        # input connections per unit (half of script's 128) # default
-# MAX_CONNS = 128        # input connections per unit 
+# MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
+MAX_CONNS = 128        # input connections per unit
+LEAKY_RELU_SLOPE = 0.01
+# MAX_CONNS = 1569        # input connections per unit 
+# MAX_CONNS = 785        # input connections per unit 
+# * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks), 
+# * or 1569 with the bias.
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
-BLOCK_SIZE = 500      # = prune_frequency # ! default
+# BLOCK_SIZE = 500      # = prune_frequency # ! default
+BLOCK_SIZE = 20_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 200      # = prune_frequency # ! default
 # BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
@@ -49,18 +58,21 @@ BLOCK_SIZE = 500      # = prune_frequency # ! default
 # BLOCK_SIZE = 5000      # = prune_frequency
 # BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
-TOTAL_STEPS = 100_000
+TOTAL_STEPS = 200_000
+# TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
 # CONNECTION_BUDGET = 5000
-CONNECTION_BUDGET = 10000
+# CONNECTION_BUDGET = 50000
+# CONNECTION_BUDGET = 10000
+CONNECTION_BUDGET = 20000
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
-MAX_GEN_PER_STEP = 20
+MAX_GEN_PER_STEP = 20000
 
 # PRUNE_PER_BLOCK = 0 # Default  
 # PRUNE_PER_BLOCK = 200 # Default  
 # PRUNE_PER_BLOCK = 300 
-PRUNE_PER_BLOCK = 1000
+PRUNE_PER_BLOCK = 15000
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 20_000
@@ -76,33 +88,21 @@ PRUNE_PER_BLOCK = 1000
 
 SGD_LR = 1e-3
 ADAM_LR = 1e-4
-ADAMW_LR = 1e-4 # best on mnist
+# ADAMW_LR = 1e-4 # best on mnist
+ADAMW_LR = 1e-3 # best on mnist
 # ADAMW_LR = 1e-4
 
 SEED = 43
+# SEED = 421
 
 IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
 WEIGHT_DECAY = 0.0
 # WEIGHT_DECAY = 0.0001
+# WEIGHT_DECAY = 0.001
 
 
 ### ! Below settings for I guess a default culling
-# N_HIDDEN_MAX = 200 # default
-# MAX_CONNS = 128        # input connections per unit 
-
-# BLOCK_SIZE = 200      # = prune_frequency # ! default
-# TOTAL_STEPS = 100_000
-# CONNECTION_BUDGET = 10000
-# PRUNE_RATE = 0.01 # default
-# EMA_DECAY = 0.999
-# MAX_GEN_PER_STEP = 20
-# PRUNE_PER_BLOCK = 600 # full connected fractional utility reduction to 7k
-# SEED = 42
-# IDBD_INIT_LR = 1e-6
-# IDBD_META_LR = 1e-3
-# WEIGHT_DECAY = 0.0
-
 GENERATE_MODE = "FULL"
 # GENERATE_MODE = "RANDOM_SPARSE"
 FC_ISOLATED_DEFAULT = False
@@ -114,31 +114,50 @@ SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last
 AUX_HEBBIAN_MODE_DEFAULT = 'none'
 # AUX_HEBBIAN_MODE_DEFAULT = 'post_activation'
 CULL_UTILITY_MODE_DEFAULT = 'original'
+# CULL_UTILITY_MODE_DEFAULT = 'hebbian'
 # CULL_UTILITY_MODE_DEFAULT = 'product'
 # options: 'original', 'hebbian', 'product', 'sum'
 
+USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
+# USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
 
 
-# EDAN_DEFAULT_SETTINGS:
-N_TASKS = 2
-NUM_CLASSES = 10
-INPUT_PER_TASK = 784
-INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
-OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
-N_HIDDEN_MAX = 100
-MAX_CONNS = 64        # input connections per unit (half of script's 128)
+# # ! EDAN_DEFAULT_SETTINGS:
+# N_TASKS = 2
+# NUM_CLASSES = 10
+# INPUT_PER_TASK = 784
+# INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
+# OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
-BLOCK_SIZE = 100      # = prune_frequency
-TOTAL_STEPS = 100_000
-CONNECTION_BUDGET = 3000
-PRUNE_RATE = 0.0001
-EMA_DECAY = 0.999
-MAX_GEN_PER_STEP = 20
+# N_HIDDEN_MAX = 100
+# MAX_CONNS = 64        # input connections per unit (half of script's 128)
 
-SGD_LR = 1e-3
-ADAM_LR = 1e-3
-SEED = 42
+# BLOCK_SIZE = 100      # = prune_frequency
+# TOTAL_STEPS = 100_000
+# CONNECTION_BUDGET = 3000
+# PRUNE_RATE = 0.0001
+# EMA_DECAY = 0.999
+# MAX_GEN_PER_STEP = 20
+
+# SGD_LR = 1e-3
+# ADAM_LR = 1e-3
+# SEED = 42
+
+# Derived
+BIAS_DIM = 1 if USE_BIAS_FEATURE else 0  # single global bias appended after all task inputs
+INPUT_DIM = INPUT_PER_TASK * N_TASKS + BIAS_DIM
+OUTPUT_DIM = NUM_CLASSES * N_TASKS
+
+
+# ══════════════════════════════════════════════════════════════════════
+# MLFLOW CONFIG
+# ══════════════════════════════════════════════════════════════════════
+MLFLOW_TRACKING_URI = "http://localhost:5000"
+MLFLOW_EXPERIMENT_NAME = "double_mnist_prune_and_gen"
+# GLOBAL_RUN_NAME = "run_group_1"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "SEED43_NOCROSSTASK_double_mnist_fully_connected_600n_NO_BIAS"  # appended with experiment name for each run
+GLOBAL_RUN_NAME = "gentest_SEED43_20k_connections_15000_to_prune_every_20k_128_default_inputs_weightdecay0.0_"  # appended with experiment name for each run
 
 
 
@@ -174,6 +193,8 @@ class ParallelMNIST:
                 idx = self.rng.integers(0, self.n)
                 xs[s, t * INPUT_PER_TASK:(t + 1) * INPUT_PER_TASK] = self.images[idx]
                 ys[s, t] = self.perms[t][self.labels[idx]]
+            if USE_BIAS_FEATURE:
+                xs[s, -1] = 1.0
         return xs, ys
 
 # ══════════════════════════════════════════════════════════════════════
@@ -181,7 +202,7 @@ class ParallelMNIST:
 # ══════════════════════════════════════════════════════════════════════
 
 def forward(Wi, Wo, Mi, Mo, x):
-    h = jax.nn.leaky_relu((Wi * Mi) @ x)
+    h = jax.nn.leaky_relu((Wi * Mi) @ x, negative_slope=LEAKY_RELU_SLOPE)
     return (Wo * Mo) @ h, h
 
 def loss_ce(Wi, Wo, Mi, Mo, x, label):
@@ -741,6 +762,8 @@ def _eval_task_loss_inputs_only(Wi, Wo, Mi, Mo, imgs, lbls, active_task):
     task_mask = jnp.zeros(INPUT_DIM).at[
         active_task * INPUT_PER_TASK:(active_task + 1) * INPUT_PER_TASK
     ].set(1.0)
+    if USE_BIAS_FEATURE:
+        task_mask = task_mask.at[-1].set(1.0)
 
     def one(x, y):
         raw, _ = forward(Wi, Wo, Mi, Mo, x * task_mask)
@@ -780,6 +803,10 @@ def run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_fu
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENT RUNNER
 # ══════════════════════════════════════════════════════════════════════
+
+@jax.jit
+def _eval_batch_loss(Wi, Wo, Mi, Mo, imgs, lbls):
+    return jax.vmap(lambda x, y: loss_ce(Wi, Wo, Mi, Mo, x, y))(imgs, lbls).mean()
 
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
@@ -824,6 +851,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             for t in range(N_TASKS):
                 h0, h1 = t * units_per_task, (t + 1) * units_per_task
                 Mi_np[h0:h1, t * INPUT_PER_TASK:(t + 1) * INPUT_PER_TASK] = 1
+                if USE_BIAS_FEATURE:
+                    Mi_np[h0:h1, -1] = 1
                 Mo_np[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h0:h1] = 1
             Mi = jnp.array(Mi_np)
             Mo = jnp.array(Mo_np)
@@ -852,6 +881,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     elif optimizer == 'idbd_rms_base_adam':
         opt = optax_idbd(
             # meta_lr=0.0, 
+            # meta_lr=1e-4, 
             meta_lr=1e-4, 
             init_lr=ADAMW_LR, 
             base_optimizer='adamw',
@@ -860,8 +890,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             autostep=False,
             version="prediction_grads",
             rms_style_beta_update=True,
-            rms_style_beta_update_beta_rho=0.9,
-            # rms_style_beta_update_beta_rho=0.0,
+            # rms_style_beta_update_beta_rho=0.9,
+            rms_style_beta_update_beta_rho=0.0,
             )
         # opt = optax_idbd(
         #     meta_lr=IDBD_META_LR, 
@@ -961,7 +991,15 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         if step % 10_000 == 0:
             na = int(np.array((Mi.sum(axis=1) + Mo.sum(axis=0)) > 0).sum())
             nc2 = int(Mi.sum() + Mo.sum())
-            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={int(ntp):3d}')
+            batch_loss = float(_eval_batch_loss(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
+            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={int(ntp):3d} loss={batch_loss:.4f}')
+            if mlflow.active_run():
+                mlflow.log_metrics({
+                    'train_loss': batch_loss,
+                    'n_connections': nc2,
+                    'n_units': na,
+                    'n_pruned': int(ntp),
+                }, step=step)
 
     elapsed = time.time() - t0
     print(f'  Done in {elapsed:.1f}s')
@@ -979,6 +1017,21 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 
     task_val = run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_losses)
 
+    if mlflow.active_run():
+        final_metrics = {
+            'in_purity': mip,
+            'out_purity': mop,
+            'in_entropy': mie,
+            'final_loss': final_loss,
+        }
+        for t in range(N_TASKS):
+            final_metrics[f'task_{t}_final_loss'] = float(per_task_losses[t])
+        for t, (loss_full, loss_isolated, delta) in enumerate(task_val):
+            final_metrics[f'task_{t}_loss_full'] = loss_full
+            final_metrics[f'task_{t}_loss_isolated'] = loss_isolated
+            final_metrics[f'task_{t}_delta'] = delta
+        mlflow.log_metrics(final_metrics)
+
     return mip, mop, mie, final_loss, task_val
 
 # ══════════════════════════════════════════════════════════════════════
@@ -995,16 +1048,32 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    # ('Adamw optimizer',
+    # ('Adamw optimizer + contribution utility',
     #  dict(optimizer='adamw')),
+
     # ('Adamw + edan cross-entropy utility',
     #  dict(optimizer='adamw', utility='edan_cross_entropy')),
-    # ('Adamw_weight_decay optimizer',
+
+    # ('Adamw_weight_decay + contribution utility',
     #  dict(optimizer='adamw_weight_decay')),
-    # ('Adamw_weight_decay + edan cross-entropy utility',
-    #  dict(optimizer='adamw_weight_decay', utility='edan_cross_entropy')),
-    # ('Adamw_weight_decay + fractional propagated',
-    #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
+    # # ('Adamw_weight_decay + edan cross-entropy utility',
+    # #  dict(optimizer='adamw_weight_decay', utility='edan_cross_entropy')),
+    # # ('Adamw_weight_decay + fractional propagated',
+    # #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
+
+    # # ('Adamw_weight_decay + fractional propagated, hebbian only',
+    # #  dict(optimizer='adamw_weight_decay', 
+    # #     utility='fractional_propagated',
+    # #     aux_hebbian_mode='post_activation',
+    # #     cull_utility_mode='hebbian', 
+    # # )),
+
+    # ('Adamw_weight_decay + fractional propagated, hebbian product',
+    #  dict(optimizer='adamw_weight_decay', 
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='product', 
+    # )),
 
     # # ('IDBD + fractional propagated',
     # #  dict(optimizer='idbd', utility='fractional_propagated')),
@@ -1021,13 +1090,13 @@ EXPERIMENTS = [
     #  dict(optimizer='idbd_rms_base_adam')),
 
 
-    ('idbd_rms_base_adam optimizer + contribution',
-     dict(optimizer='idbd_rms_base_adam')),
+    # ('idbd_rms_base_adam optimizer + contribution',
+    #  dict(optimizer='idbd_rms_base_adam')),
 
-    # # ('idbd_rms_base_adam optimizer + edan cross-entropy',
-    # #  dict(optimizer='idbd_rms_base_adam', utility='edan_cross_entropy')),
-    # ('idbd_rms_base_adam optimizer, fractional propagated',
-    #  dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
+#     # # ('idbd_rms_base_adam optimizer + edan cross-entropy',
+#     # #  dict(optimizer='idbd_rms_base_adam', utility='edan_cross_entropy')),
+#     ('idbd_rms_base_adam optimizer, fractional propagated',
+#      dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
 
     ('idbd_rms_base_adam optimizer, fractional propagated, hebbian product',
      dict(
@@ -1036,12 +1105,21 @@ EXPERIMENTS = [
     aux_hebbian_mode='post_activation',
     cull_utility_mode='product',
     )),
+
 #     ('idbd_rms_base_adam optimizer, fractional propagated, hebbian only',
 #      dict(
 #     optimizer='idbd_rms_base_adam',
 #     utility='fractional_propagated',
 #     aux_hebbian_mode='post_activation',
 #     cull_utility_mode='hebbian',
+# )),
+
+#     ('idbd_rms_base_adam optimizer, fractional propagated, hebbian product',
+#      dict(
+#     optimizer='idbd_rms_base_adam',
+#     utility='fractional_propagated',
+#     aux_hebbian_mode='post_activation',
+#     cull_utility_mode='product',
 # )),
 
 #     ('idbd_rms_base_adam optimizer, contribution, hebbian only',
@@ -1092,9 +1170,39 @@ if __name__ == '__main__':
     mnist_images, mnist_labels = load_mnist()
     print(f"Loaded {len(mnist_images)} images, shape={mnist_images.shape}")
 
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
     results = {}
     for name, kw in EXPERIMENTS:
-        ip, op, ie, fl, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
+        run_name = f"{GLOBAL_RUN_NAME} | {name}"
+        with mlflow.start_run(run_name=run_name):
+            mlflow.log_params({
+                'experiment_name': name,
+                'utility': kw.get('utility', 'contribution'),
+                'optimizer': kw.get('optimizer', 'sgd'),
+                'aux_hebbian_mode': kw.get('aux_hebbian_mode', AUX_HEBBIAN_MODE_DEFAULT),
+                'cull_utility_mode': kw.get('cull_utility_mode', CULL_UTILITY_MODE_DEFAULT),
+                'n_tasks': N_TASKS,
+                'n_hidden_max': N_HIDDEN_MAX,
+                'max_conns': MAX_CONNS,
+                'block_size': BLOCK_SIZE,
+                'total_steps': TOTAL_STEPS,
+                'connection_budget': CONNECTION_BUDGET,
+                'prune_rate': PRUNE_RATE,
+                'ema_decay': EMA_DECAY,
+                'prune_per_block': PRUNE_PER_BLOCK,
+                'seed': SEED,
+                'adamw_lr': ADAMW_LR,
+                'sgd_lr': SGD_LR,
+                'adam_lr': ADAM_LR,
+                'generate_mode': GENERATE_MODE,
+                'skip_last_cull': SKIP_LAST_CULL,
+                'use_bias_feature': USE_BIAS_FEATURE,
+                'input_per_task': INPUT_PER_TASK,
+                'num_classes': NUM_CLASSES,
+            })
+            ip, op, ie, fl, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
         results[name] = (ip, op, ie, fl, task_val)
 
     print(f'\n{"=" * 85}')

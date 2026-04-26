@@ -33,7 +33,8 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 # N_HIDDEN_MAX = 1000 # default
 # N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 200 # default
-N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 1000 # default
+N_HIDDEN_MAX = 100 # default
 # N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 1200 # default
 # N_HIDDEN_MAX = 600 # default
@@ -42,7 +43,8 @@ N_HIDDEN_MAX = 1000 # default
 # N_HIDDEN_MAX = 100
 # MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
 MAX_CONNS = 128        # input connections per unit
-LEAKY_RELU_SLOPE = 0.01
+# LEAKY_RELU_SLOPE = 0.01
+LEAKY_RELU_SLOPE = 1.0
 # MAX_CONNS = 1569        # input connections per unit 
 # MAX_CONNS = 785        # input connections per unit 
 # * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks), 
@@ -50,7 +52,9 @@ LEAKY_RELU_SLOPE = 0.01
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 500      # = prune_frequency # ! default
-BLOCK_SIZE = 20_000      # = prune_frequency # ! default
+# BLOCK_SIZE = 20_000      # = prune_frequency # ! default
+BLOCK_SIZE = 290_000      # = prune_frequency # ! default
+# BLOCK_SIZE = 19_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 200      # = prune_frequency # ! default
 # BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
@@ -58,7 +62,8 @@ BLOCK_SIZE = 20_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 5000      # = prune_frequency
 # BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
-TOTAL_STEPS = 200_000
+# TOTAL_STEPS = 200_000
+TOTAL_STEPS = 300_000
 # TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
 # CONNECTION_BUDGET = 5000
@@ -71,8 +76,13 @@ MAX_GEN_PER_STEP = 20000
 
 # PRUNE_PER_BLOCK = 0 # Default  
 # PRUNE_PER_BLOCK = 200 # Default  
+# PRUNE_PER_BLOCK = 784 # Default  
+# PRUNE_PER_BLOCK = 784 # Default  
+# PRUNE_PER_BLOCK = 1466 # Default  
+PRUNE_PER_BLOCK = 1066 # Default  
+# PRUNE_PER_BLOCK = 106 # Default  
 # PRUNE_PER_BLOCK = 300 
-PRUNE_PER_BLOCK = 15000
+# PRUNE_PER_BLOCK = 15000
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 500
 # PRUNE_PER_BLOCK = 20_000
@@ -92,8 +102,7 @@ ADAM_LR = 1e-4
 ADAMW_LR = 1e-3 # best on mnist
 # ADAMW_LR = 1e-4
 
-SEED = 43
-# SEED = 421
+
 
 IDBD_INIT_LR = 1e-6
 IDBD_META_LR = 1e-3
@@ -103,13 +112,15 @@ WEIGHT_DECAY = 0.0
 
 
 ### ! Below settings for I guess a default culling
-GENERATE_MODE = "FULL"
+# GENERATE_MODE = "FULL"
+GENERATE_MODE = "NO_GENERATE"
+# NO_GENERATE
 # GENERATE_MODE = "RANDOM_SPARSE"
 FC_ISOLATED_DEFAULT = False
 # FC_ISOLATED_DEFAULT = True # for fully connected, sets whether cross-task connections are prevented
 
-# SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
-SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
+SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
+# SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
 
 AUX_HEBBIAN_MODE_DEFAULT = 'none'
 # AUX_HEBBIAN_MODE_DEFAULT = 'post_activation'
@@ -117,10 +128,6 @@ CULL_UTILITY_MODE_DEFAULT = 'original'
 # CULL_UTILITY_MODE_DEFAULT = 'hebbian'
 # CULL_UTILITY_MODE_DEFAULT = 'product'
 # options: 'original', 'hebbian', 'product', 'sum'
-
-USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
-# USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
-
 
 
 # # ! EDAN_DEFAULT_SETTINGS:
@@ -144,21 +151,34 @@ USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
 # ADAM_LR = 1e-3
 # SEED = 42
 
-# Derived
-BIAS_DIM = 1 if USE_BIAS_FEATURE else 0  # single global bias appended after all task inputs
-INPUT_DIM = INPUT_PER_TASK * N_TASKS + BIAS_DIM
-OUTPUT_DIM = NUM_CLASSES * N_TASKS
+# SEED = 43
+# SEED = 421
+SEED = 6969
+
+# USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
+USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
 
 
 # ══════════════════════════════════════════════════════════════════════
 # MLFLOW CONFIG
 # ══════════════════════════════════════════════════════════════════════
 MLFLOW_TRACKING_URI = "http://localhost:5000"
-MLFLOW_EXPERIMENT_NAME = "double_mnist_prune_and_gen"
+# MLFLOW_EXPERIMENT_NAME = "double_mnist_prune_and_gen"
+# MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_bias_comparison_weight_test"
+MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_different_time_magnitude_check"
+# MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_prune_784_test"
 # GLOBAL_RUN_NAME = "run_group_1"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "SEED43_NOCROSSTASK_double_mnist_fully_connected_600n_NO_BIAS"  # appended with experiment name for each run
-GLOBAL_RUN_NAME = "gentest_SEED43_20k_connections_15000_to_prune_every_20k_128_default_inputs_weightdecay0.0_"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "gentest_SEED43_20k_connections_15000_to_prune_every_20k_128_default_inputs_weightdecay0.0_"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "prune_200_once"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "bias:"  # appended with experiment name for each run
+GLOBAL_RUN_NAME = "300k bias"  # appended with experiment name for each run
 
+
+# Derived
+BIAS_DIM = 1 if USE_BIAS_FEATURE else 0  # single global bias appended after all task inputs
+INPUT_DIM = INPUT_PER_TASK * N_TASKS + BIAS_DIM
+OUTPUT_DIM = NUM_CLASSES * N_TASKS
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -806,6 +826,75 @@ def run_single_task_validation(Wi, Wo, Mi, Mo, test_imgs, test_lbls, per_task_fu
     return task_results
 
 # ══════════════════════════════════════════════════════════════════════
+# INITIALIZATION
+# ══════════════════════════════════════════════════════════════════════
+
+def unit_specs(n_units=1, *, n_in_t0=0, n_out_t0=0, n_in_t1=0, n_out_t1=0):
+    """Build a list of n_units identical unit specs for use with custom_init.
+
+    Each spec describes how many random connections per task the unit gets.
+    Concatenate lists to mix different unit types:
+        unit_specs(3, n_in_t0=10, n_out_t0=5) + unit_specs(2, n_in_t1=8, n_out_t1=4)
+
+    Args:
+        n_units: how many units with this connectivity pattern
+        n_in_t0 / n_out_t0: random input / output connections to task-0 slice
+        n_in_t1 / n_out_t1: random input / output connections to task-1 slice
+    """
+    spec = {
+        'inputs':  {t: n for t, n in {0: n_in_t0, 1: n_in_t1}.items() if n > 0},
+        'outputs': {t: n for t, n in {0: n_out_t0, 1: n_out_t1}.items() if n > 0},
+    }
+    return [spec] * n_units
+
+
+def init_custom_units(seed, unit_specs_list):
+    """Materialize a list of unit specs into Wi/Wo/Mi/Mo arrays.
+
+    Each spec: {'inputs': {task_id: n_connections}, 'outputs': {task_id: n_connections}}
+    Weights are drawn uniform over [-sqrt(3/n_in), +sqrt(3/n_in)].
+    Returns (Wi, Wo, Mi, Mo) as jax arrays ready to pass to run_experiment.
+    """
+    if len(unit_specs_list) > N_HIDDEN_MAX:
+        raise ValueError(
+            f"Too many unit specs ({len(unit_specs_list)}) for N_HIDDEN_MAX={N_HIDDEN_MAX}"
+        )
+
+    rng = np.random.default_rng(seed)
+    Mi_np = np.zeros((N_HIDDEN_MAX, INPUT_DIM), dtype=np.int32)
+    Mo_np = np.zeros((OUTPUT_DIM, N_HIDDEN_MAX), dtype=np.int32)
+    Wi_np = np.zeros((N_HIDDEN_MAX, INPUT_DIM), dtype=np.float32)
+
+    for h, spec in enumerate(unit_specs_list):
+        in_conns  = spec.get('inputs',  {})
+        out_conns = spec.get('outputs', {})
+        n_in_total = sum(in_conns.values()) + (1 if USE_BIAS_FEATURE else 0)
+        bound = float(np.sqrt(3.0 / max(n_in_total, 1)))
+
+        for task_id, n_conns in in_conns.items():
+            task_start = task_id * INPUT_PER_TASK
+            chosen = rng.choice(INPUT_PER_TASK, size=min(n_conns, INPUT_PER_TASK), replace=False)
+            Mi_np[h, task_start + chosen] = 1
+            Wi_np[h, task_start + chosen] = rng.uniform(-bound, bound, size=len(chosen))
+
+        if USE_BIAS_FEATURE:
+            Mi_np[h, -1] = 1
+            Wi_np[h, -1] = float(rng.uniform(-bound, bound))
+
+        for task_id, n_conns in out_conns.items():
+            task_out_start = task_id * NUM_CLASSES
+            chosen = rng.choice(NUM_CLASSES, size=min(n_conns, NUM_CLASSES), replace=False)
+            Mo_np[task_out_start + chosen, h] = 1
+
+    return (
+        jnp.array(Wi_np),
+        jnp.zeros((OUTPUT_DIM, N_HIDDEN_MAX)),
+        jnp.array(Mi_np),
+        jnp.array(Mo_np),
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════
 # EXPERIMENT RUNNER
 # ══════════════════════════════════════════════════════════════════════
 
@@ -819,7 +908,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
                    seed=SEED, fully_connected_init=False, fc_isolated=FC_ISOLATED_DEFAULT,
                    skip_last_cull=SKIP_LAST_CULL,
                    aux_hebbian_mode=AUX_HEBBIAN_MODE_DEFAULT,
-                   cull_utility_mode=CULL_UTILITY_MODE_DEFAULT):
+                   cull_utility_mode=CULL_UTILITY_MODE_DEFAULT,
+                   custom_init=None):
     utility_mode = utility
     # all_out = (generation == 'all_output')
     all_out = True
@@ -827,8 +917,12 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 
     print(f'\n{"=" * 65}')
     print(f'{name}')
+    init_desc = (f'custom({len(custom_init)} units)' if custom_init is not None
+                 else ('fc_isolated' if fully_connected_init and fc_isolated
+                       else 'fc' if fully_connected_init
+                       else f'random({n_hidden_init})'))
     print(f'  utility={utility} aux_hebbian={aux_hebbian_mode} cull={cull_utility_mode} '
-          f'gen={generation} opt={optimizer} init={n_hidden_init} '
+          f'gen={generation} opt={optimizer} init={init_desc} '
           f'permute={permute_period} fc_isolated={fc_isolated}')
 
     stream = ParallelMNIST(mnist_images, mnist_labels, seed=seed,
@@ -847,7 +941,9 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     acc = jnp.array(0.0)
 
     # Generate initial units
-    if fully_connected_init:
+    if custom_init is not None:
+        Wi, Wo, Mi, Mo = init_custom_units(seed, custom_init)
+    elif fully_connected_init:
         if fc_isolated:
             # Block-diagonal: split N_HIDDEN_MAX evenly, no cross-task connections
             units_per_task = N_HIDDEN_MAX // N_TASKS
@@ -984,6 +1080,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
                 rng, gk = jax.random.split(rng)
                 if GENERATE_MODE == "RANDOM_SPARSE":
                     Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
+                if GENERATE_MODE == "NO_GENERATE":
+                    continue
                 else:
                     Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
         else:
@@ -1035,6 +1133,30 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             final_metrics[f'task_{t}_loss_full'] = loss_full
             final_metrics[f'task_{t}_loss_isolated'] = loss_isolated
             final_metrics[f'task_{t}_delta'] = delta
+        Mi_np, Mo_np, Wi_np = np.array(Mi), np.array(Mo), np.array(Wi)
+        for h in range(N_HIDDEN_MAX):
+            if not (Mi_np[h].any() or Mo_np[:, h].any()):
+                continue
+            for t in range(N_TASKS):
+                sl = slice(t * INPUT_PER_TASK, (t + 1) * INPUT_PER_TASK)
+                mask_t = Mi_np[h, sl]
+                n_in = int(mask_t.sum())
+                final_metrics[f'unit_{h}_in_t{t}'] = n_in
+                final_metrics[f'unit_{h}_out_t{t}'] = int(
+                    Mo_np[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h].sum()
+                )
+                active_w = np.abs(Wi_np[h, sl][mask_t.astype(bool)])
+                final_metrics[f'unit_{h}_avg_w_in_t{t}'] = float(active_w.mean() if n_in > 0 else 0.0)
+                if t == 0:
+                    final_metrics[f'unit_{h}_min_w_in_t0'] = float(active_w.min() if n_in > 0 else 0.0)
+                    final_metrics[f'unit_{h}_max_w_in_t0'] = float(active_w.max() if n_in > 0 else 0.0)
+                if t == 1:
+                    final_metrics[f'unit_{h}_min_w_in_t1'] = float(active_w.min() if n_in > 0 else 0.0)
+                    final_metrics[f'unit_{h}_max_w_in_t1'] = float(active_w.max() if n_in > 0 else 0.0)
+            if USE_BIAS_FEATURE:
+                final_metrics[f'unit_{h}_in_bias'] = int(Mi_np[h, -1])
+                if Mi_np[h, -1]:
+                    final_metrics[f'unit_{h}_w_bias'] = float(np.abs(Wi_np[h, -1]))
         mlflow.log_metrics(final_metrics)
 
     return mip, mop, mie, final_loss, task_val
@@ -1103,13 +1225,13 @@ EXPERIMENTS = [
 #     ('idbd_rms_base_adam optimizer, fractional propagated',
 #      dict(optimizer='idbd_rms_base_adam', utility='fractional_propagated')),
 
-    ('idbd_rms_base_adam optimizer, fractional propagated, hebbian product',
-     dict(
-    optimizer='idbd_rms_base_adam',
-    utility='fractional_propagated',
-    aux_hebbian_mode='post_activation',
-    cull_utility_mode='product',
-    )),
+    # ('idbd_rms_base_adam optimizer, fractional propagated, hebbian product',
+    #  dict(
+    # optimizer='idbd_rms_base_adam',
+    # utility='fractional_propagated',
+    # aux_hebbian_mode='post_activation',
+    # cull_utility_mode='product',
+    # )),
 
 #     ('idbd_rms_base_adam optimizer, fractional propagated, hebbian only',
 #      dict(
@@ -1168,6 +1290,126 @@ EXPERIMENTS = [
     # ('8. All combined (script-like)',
     #  dict(utility='propagated', generation='single_output', optimizer='adam',
     #       n_hidden_init=0, permute_period=2000)),
+
+    # ── Custom-init progression ──────────────────────────────────────────
+    # # # 1. Baseline: no hidden units at all
+    # ('custom_init: no units (baseline)',
+    #  dict(custom_init=[])),
+
+    # # # 2. Single unit, 1 random input from task-0, 1 random output to task-0
+    # ('1 unit, 1-in-t0 / 1-out-t0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=1, n_out_t0=1))),
+
+    # # # 3. Single unit, n random inputs from task-0, n random outputs to task-0
+    # # # ('custom_init: 1 unit, 10-in-t0 / 10-out-t0',
+    # # # ('1 unit, 784-input-t0 / 10-out-t0',
+    # ('1 unit, 784-input-t0 / 1-out-t0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=1))),
+
+    # 4. Single unit spanning both tasks
+    #    n inputs/outputs task-0, m inputs task-1, j outputs task-1
+    # ('1 cross-task unit, 784 input on both, output only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=1, n_in_t1=784, n_out_t1=0)),
+    # ),
+
+    # ('1 cross-task unit, 784 input on only task 0, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=0, n_out_t1=0)),
+    # ),
+
+    # ('1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0)),
+    # ),
+
+    # ('fractional propagated: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    # #     aux_hebbian_mode='post_activation',
+    # #     cull_utility_mode='product',
+    #       ),
+    # ),
+
+    # ('fractional hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian',
+    #     ),
+    # ),
+    # ('fractional hebbian product: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='product',
+    #     ),
+    # ),
+    # ('contribution hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     # utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian',
+    #     ),
+    # ),
+
+    ('adamw: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+        optimizer='adamw_weight_decay',
+     ),
+    ),
+
+    ('adamw fractional propagated: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+        utility='fractional_propagated',
+        optimizer='adamw_weight_decay',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='product',
+          ),
+    ),
+
+    ('adamw fractional hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+        utility='fractional_propagated',
+        aux_hebbian_mode='post_activation',
+        cull_utility_mode='hebbian',
+        optimizer='adamw_weight_decay',
+        ),
+    ),
+    ('adamw fractional hebbian product: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+        utility='fractional_propagated',
+        aux_hebbian_mode='post_activation',
+        cull_utility_mode='product',
+        optimizer='adamw_weight_decay',
+        ),
+    ),
+    ('adamw contribution hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+        # utility='fractional_propagated',
+        aux_hebbian_mode='post_activation',
+        cull_utility_mode='hebbian',
+        optimizer='adamw_weight_decay',
+        ),
+    ),
+
+
+    # ('fractional: 1 cross-task unit, 784 input on both, output only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=1, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='product',
+    #     ),
+    # ),
+     
+
+    # 5. Multiple units all with same cross-task pattern (task-0 primary)
+    # ('custom_init: 5 cross-task units (t0 primary)',
+    #  dict(custom_init=unit_specs(5, n_in_t0=10, n_out_t0=5, n_in_t1=8, n_out_t1=4))),
+
+    # 6. Symmetric: units for each task, each with cross-task connections
+    # ('custom_init: 5 t0-primary + 5 t1-primary units',
+    #  dict(custom_init=(
+    #      unit_specs(5, n_in_t0=10, n_out_t0=5, n_in_t1=8,  n_out_t1=4) +
+    #      unit_specs(5, n_in_t1=10, n_out_t1=5, n_in_t0=8,  n_out_t0=4)
+    #  ))),
 ]
 
 if __name__ == '__main__':

@@ -356,8 +356,13 @@ def compute_utility_edan_cross_entropy(Wi, Wo, Mi, Mo, x, y):
         U_t = edan_cross_entropy_loss_utility(h, W_out_t, logits[t], y[t])
         U_hidden = U_hidden + U_t
 
-    U_in = U_hidden[:, None] * Mi   # (N_HIDDEN_MAX, INPUT_DIM)
-    U_out = U_hidden[None, :] * Mo  # (OUTPUT_DIM, N_HIDDEN_MAX)
+    # Multiply by connection magnitude so each connection has a distinct utility value.
+    # Without this, all connections of a unit share the same scalar U_hidden[i], which
+    # causes batch_prune's 1e-10 tie-breaking noise to be a float32 no-op (noise << epsilon
+    # of O(1) values), making thresh == all utility values and the strict < comparison
+    # prune nothing.
+    U_in = U_hidden[:, None] * jnp.abs(Wi) * Mi   # (N_HIDDEN_MAX, INPUT_DIM)
+    U_out = U_hidden[None, :] * jnp.abs(Wo) * Mo  # (OUTPUT_DIM, N_HIDDEN_MAX)
     return U_in, U_out
 
 def compute_auxiliary_hebbian_utility(Wi, Wo, Mi, Mo, x, U_in, U_out, aux_hebbian_mode='post_activation'):

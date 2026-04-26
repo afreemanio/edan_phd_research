@@ -106,7 +106,10 @@ def ci95(arr: np.ndarray) -> float:
 # MLflow helpers
 # ═════════════════════════════════════════════════════════════════════
 
-_DEFAULT_MLFLOW_TRACKING_URI = 'sqlite:///mlruns.db'
+# Fallback if MLFLOW_TRACKING_URI env var isn't set. Matches the default
+# in phd/research_utils/logging.py (MLFLOW_DEFAULT_TRACKING_URI).
+# _DEFAULT_MLFLOW_TRACKING_URI = 'sqlite:///mlruns.db'
+MLFLOW_DEFAULT_TRACKING_URI = 'http://localhost:5000'
 
 
 def resolve_mlflow_tracking_uri() -> str:

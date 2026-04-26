@@ -14,8 +14,8 @@ from omegaconf import DictConfig
 
 
 COMET_META_PARAMS = ['config-name', 'sweep_command', 'sweep_name', 'sweep_project']
-MLFLOW_DEFAULT_TRACKING_URI = 'sqlite:///mlruns.db'
-
+# MLFLOW_DEFAULT_TRACKING_URI = 'sqlite:///mlruns.db'
+MLFLOW_DEFAULT_TRACKING_URI = 'http://localhost:5000'
 
 wandb = None
 comet_ml = None

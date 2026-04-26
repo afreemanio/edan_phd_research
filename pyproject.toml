@@ -22,6 +22,7 @@ platforms = ["linux-64"]
 
 [tool.pixi.feature.base.pypi-dependencies]
 phd = { path = ".", editable = true }
+hydra-core = ">=1.3, <1.4"
 # pixi add --pypi "mlflow>=3.0,<4" --feature base
 # pixi add --pypi "mlflow>=2.0,<3" --feature base
 # edan_phd_research = { path = ".", editable = true }
@@ -29,7 +30,6 @@ phd = { path = ".", editable = true }
 [tool.pixi.feature.base.dependencies]
 python = "3.12.*"
 annotated-types = ">=0.7.0,<0.8"
-antlr4-python3-runtime = ">=4.13.2,<5"
 asttokens = ">=3.0.1,<4"
 attrs = ">=26.1.0,<27"
 certifi = ">=2026.2.25,<2027"
@@ -51,7 +51,6 @@ fonttools = ">=4.62.0,<5"
 fsspec = ">=2026.3.0,<2027"
 gitdb = ">=4.0.12,<5"
 gitpython = ">=3.1.46,<4"
-hydra-core = ">=0.11.3,<0.12"
 idna = ">=3.11,<4"
 ipykernel = ">=7.2.0,<8"
 ipython = ">=9.12.0,<10"
@@ -72,7 +71,6 @@ mpmath = ">=1.4.1,<2"
 nest-asyncio = ">=1.6.0,<2"
 networkx = ">=3.6.1,<4"
 numpy = ">=2.4.3,<3"
-omegaconf = ">=1.4.1,<2"
 packaging = ">=26.0,<27"
 # pandas = ">=3.0.2,<4"
 parso = ">=0.8.6,<0.9"
@@ -124,6 +122,7 @@ plotly = ">=6.6.0,<7"
 nbformat = ">=5.10.4,<6"
 optax = ">=0.2.8,<0.3"
 mlflow = ">=3.0,<4"
+setuptools = "81.*"
 # `pixi add numpy --feature base`
 # `pixi add --pypi numpy --feature base`
 

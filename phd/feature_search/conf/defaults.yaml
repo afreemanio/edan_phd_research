@@ -13,7 +13,8 @@ seed: null
 wandb: false
 
 mlflow: false
-mlflow_tracking_uri: sqlite:///outputs/mlflow_runs.db
+# mlflow_tracking_uri: sqlite:///outputs/mlflow_runs.db
+mlflow_tracking_uri: http://localhost:5000
 
 comet_ml: false
 comet_ml_workspace: phd-research

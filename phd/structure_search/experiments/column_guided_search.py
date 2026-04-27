@@ -1830,13 +1830,13 @@ def _sparsify_outputs(model: DynamicNetwork, rng: PRNGKeyArray) -> DynamicNetwor
 
 def prepare_experiment(cfg: DictConfig, n_tasks: int):
     seeds = cfg.seed
-    base_images, base_labels, num_classes, input_dim_per_task = load_dataset('mnist', split='train')
+    base_images, base_labels, num_classes, input_dim_per_task, _, _ = load_dataset('mnist', split='train')
     input_dim = n_tasks * input_dim_per_task
     output_dim = n_tasks * num_classes
 
     test_images_raw = test_labels_raw = None
     if cfg.train.get('eval_freq', 0) > 0:
-        test_images_raw, test_labels_raw, _, _ = load_dataset('mnist', split='test')
+        test_images_raw, test_labels_raw, _, _, _, _ = load_dataset('mnist', split='test')
 
     streams, train_states = [], []
     for seed in seeds:

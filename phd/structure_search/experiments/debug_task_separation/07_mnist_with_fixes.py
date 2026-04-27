@@ -37,7 +37,7 @@ N_EVAL = 200
 
 def load_mnist():
     from data import load_dataset
-    images, labels, _, _ = load_dataset('mnist', split='train')
+    images, labels, _, _, _, _ = load_dataset('mnist', split='train')
     return jnp.array(images, dtype=jnp.float32), jnp.array(labels, dtype=jnp.int32)
 
 # ══════════════════════════════════════════════════════════════════════

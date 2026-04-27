@@ -237,22 +237,22 @@ def prepare_experiment(
 
     # --- Load data ---
     if dataset_name == 'parallel_mnist':
-        base_images, base_labels, num_classes, input_dim_per_task = load_dataset('mnist', split='train')
+        base_images, base_labels, num_classes, input_dim_per_task, _, _ = load_dataset('mnist', split='train')
         input_dim = n_tasks * input_dim_per_task
         output_dim = n_tasks * num_classes
 
         test_data = None
         test_images_raw = test_labels_raw = None
         if eval_freq > 0:
-            test_images_raw, test_labels_raw, _, _ = load_dataset('mnist', split='test')
+            test_images_raw, test_labels_raw, _, _, _, _ = load_dataset('mnist', split='test')
     else:
-        images, labels, num_classes, input_dim = load_dataset(dataset_name)
+        images, labels, num_classes, input_dim, _, _ = load_dataset(dataset_name)
         output_dim = num_classes
         n_tasks = 1
 
         test_data = None
         if eval_freq > 0:
-            test_img, test_lbl, _, _ = load_dataset(dataset_name, split='test')
+            test_img, test_lbl, _, _, _, _ = load_dataset(dataset_name, split='test')
             test_data = (test_img, test_lbl)
 
     # --- Resolve hidden_dim ---

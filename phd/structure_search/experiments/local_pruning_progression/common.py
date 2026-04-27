@@ -65,7 +65,7 @@ _MNIST_CACHE = {}
 def load_mnist():
     if 'data' not in _MNIST_CACHE:
         from data import load_dataset
-        images, labels, _, _ = load_dataset('mnist', split='train')
+        images, labels, _, _, _, _ = load_dataset('mnist', split='train')
         _MNIST_CACHE['data'] = (
             jnp.array(images, dtype=jnp.float32),
             jnp.array(labels, dtype=jnp.int32),

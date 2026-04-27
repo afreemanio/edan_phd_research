@@ -53,8 +53,9 @@ LEAKY_RELU_SLOPE = 1.0
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
 # BLOCK_SIZE = 500      # = prune_frequency # ! default
 # BLOCK_SIZE = 20_000      # = prune_frequency # ! default
-BLOCK_SIZE = 290_000      # = prune_frequency # ! default
-# BLOCK_SIZE = 19_000      # = prune_frequency # ! default
+# BLOCK_SIZE = 290_000      # = prune_frequency # ! default
+# BLOCK_SIZE = 190_000      # = prune_frequency # ! default
+BLOCK_SIZE = 19_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 200      # = prune_frequency # ! default
 # BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
@@ -62,8 +63,8 @@ BLOCK_SIZE = 290_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 5000      # = prune_frequency
 # BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
-# TOTAL_STEPS = 200_000
-TOTAL_STEPS = 300_000
+TOTAL_STEPS = 200_000
+# TOTAL_STEPS = 300_000
 # TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
 # CONNECTION_BUDGET = 5000
@@ -75,11 +76,13 @@ EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20000
 
 # PRUNE_PER_BLOCK = 0 # Default  
+# PRUNE_PER_BLOCK = 1066 # Default  
+# PRUNE_PER_BLOCK = 1266 # Default  
+PRUNE_PER_BLOCK = 130 # Default  
 # PRUNE_PER_BLOCK = 200 # Default  
 # PRUNE_PER_BLOCK = 784 # Default  
 # PRUNE_PER_BLOCK = 784 # Default  
 # PRUNE_PER_BLOCK = 1466 # Default  
-PRUNE_PER_BLOCK = 1066 # Default  
 # PRUNE_PER_BLOCK = 106 # Default  
 # PRUNE_PER_BLOCK = 300 
 # PRUNE_PER_BLOCK = 15000
@@ -96,6 +99,7 @@ PRUNE_PER_BLOCK = 1066 # Default
 # PRUNE_PER_BLOCK = 300 
 
 
+# SGD_LR = 1e-3
 SGD_LR = 1e-3
 ADAM_LR = 1e-4
 # ADAMW_LR = 1e-4 # best on mnist
@@ -155,9 +159,12 @@ CULL_UTILITY_MODE_DEFAULT = 'original'
 # SEED = 421
 SEED = 6969
 
-# USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
-USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
+USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
+# USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
 
+
+PER_PIXEL_NORMALIZE = False
+# PER_PIXEL_NORMALIZE = True
 
 # ══════════════════════════════════════════════════════════════════════
 # MLFLOW CONFIG
@@ -165,14 +172,17 @@ USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_prune_and_gen"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_bias_comparison_weight_test"
-MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_different_time_magnitude_check"
+# MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_different_time_magnitude_check"
+MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_per_pixel_normalize_test"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_prune_784_test"
 # GLOBAL_RUN_NAME = "run_group_1"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "SEED43_NOCROSSTASK_double_mnist_fully_connected_600n_NO_BIAS"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "gentest_SEED43_20k_connections_15000_to_prune_every_20k_128_default_inputs_weightdecay0.0_"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "prune_200_once"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "bias:"  # appended with experiment name for each run
-GLOBAL_RUN_NAME = "300k bias"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "NORMALIZE 200k bias cull 130 every16k"  # appended with experiment name for each run
+GLOBAL_RUN_NAME = "cull adam baseline 200k no bias 130 every16k"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "200k bias cull"  # appended with experiment name for each run
 
 
 # Derived
@@ -185,9 +195,10 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS
 # DATA
 # ══════════════════════════════════════════════════════════════════════
 
-def load_mnist1():
+
+def load_mnist():
     from data import load_dataset
-    images, labels, _, _ = load_dataset('mnist', split='train')
+    images, labels, _, _, _, _ = load_dataset('mnist', split='train', per_pixel_normalize=PER_PIXEL_NORMALIZE)
     return np.array(images, dtype=np.float32), np.array(labels, dtype=np.int32)
 
 class ParallelMNIST:
@@ -1356,39 +1367,39 @@ EXPERIMENTS = [
      ),
     ),
 
-    ('adamw fractional propagated: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
-     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
-        utility='fractional_propagated',
-        optimizer='adamw_weight_decay',
+    # ('adamw fractional propagated: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    #     optimizer='adamw_weight_decay',
+    # #     aux_hebbian_mode='post_activation',
+    # #     cull_utility_mode='product',
+    #       ),
+    # ),
+
+    # ('adamw fractional hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian',
+    #     optimizer='adamw_weight_decay',
+    #     ),
+    # ),
+    # ('adamw fractional hebbian product: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     utility='fractional_propagated',
     #     aux_hebbian_mode='post_activation',
     #     cull_utility_mode='product',
-          ),
-    ),
-
-    ('adamw fractional hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
-     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
-        utility='fractional_propagated',
-        aux_hebbian_mode='post_activation',
-        cull_utility_mode='hebbian',
-        optimizer='adamw_weight_decay',
-        ),
-    ),
-    ('adamw fractional hebbian product: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
-     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
-        utility='fractional_propagated',
-        aux_hebbian_mode='post_activation',
-        cull_utility_mode='product',
-        optimizer='adamw_weight_decay',
-        ),
-    ),
-    ('adamw contribution hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
-     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
-        # utility='fractional_propagated',
-        aux_hebbian_mode='post_activation',
-        cull_utility_mode='hebbian',
-        optimizer='adamw_weight_decay',
-        ),
-    ),
+    #     optimizer='adamw_weight_decay',
+    #     ),
+    # ),
+    # ('adamw contribution hebbian only: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     # utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian',
+    #     optimizer='adamw_weight_decay',
+    #     ),
+    # ),
 
 
     # ('fractional: 1 cross-task unit, 784 input on both, output only on task 0',

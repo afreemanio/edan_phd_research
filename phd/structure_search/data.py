@@ -5,7 +5,10 @@ import numpy as np
 
 def load_dataset(
     name: str, split: str = 'train',
-) -> Tuple[np.ndarray, np.ndarray, int, int]:
+    per_pixel_normalize: bool = False,
+    normalize_mean: Optional[np.ndarray] = None,
+    normalize_std: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray, int, int, Optional[np.ndarray], Optional[np.ndarray]]:
     """Load and preprocess a dataset for online MLP training.
 
     Images are normalized to [0, 1] and flattened to 1D vectors.
@@ -13,12 +16,22 @@ def load_dataset(
     Args:
         name: Dataset name ('cifar10' or 'mnist').
         split: 'train' or 'test'.
+        per_pixel_normalize: If True, apply per-pixel z-score normalization
+            (mean=0, std=1 per pixel). When loading the test split, pass the
+            training mean/std via normalize_mean and normalize_std to avoid
+            leaking test statistics.
+        normalize_mean: Per-pixel mean to use for normalization. If None and
+            per_pixel_normalize is True, computed from this split.
+        normalize_std: Per-pixel std to use for normalization. If None and
+            per_pixel_normalize is True, computed from this split.
 
     Returns:
         images: Float array (N, input_dim)
         labels: Int array (N,) with class indices
         num_classes: Number of classes
         input_dim: Flattened input dimensionality
+        mean: Per-pixel mean used for normalization, or None
+        std: Per-pixel std used for normalization, or None
     """
     from torchvision import datasets
 
@@ -41,7 +54,16 @@ def load_dataset(
     else:
         raise ValueError(f'Unknown dataset: {name}')
 
-    return images, labels, num_classes, input_dim
+    mean, std = None, None
+    if per_pixel_normalize:
+        if normalize_mean is None:
+            normalize_mean = images.mean(axis=0)
+        if normalize_std is None:
+            normalize_std = images.std(axis=0)
+        images = (images - normalize_mean) / (normalize_std + 1e-8)
+        mean, std = normalize_mean, normalize_std
+
+    return images, labels, num_classes, input_dim, mean, std
 
 
 class DataStream:

@@ -27,35 +27,40 @@ INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
 OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
 
-# fully_connected_init = False
+# ! n_hidden_init 
+# ! fully_connected_init = False
 # N_HIDDEN_MAX = 100 # default
 # N_HIDDEN_MAX = 200 # default
 # N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 100 # default
+# N_HIDDEN_MAX = 200 # default
 # N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 200 # default
 # N_HIDDEN_MAX = 1000 # default
+# N_HIDDEN_MAX = 10 # default
 N_HIDDEN_MAX = 100 # default
 # N_HIDDEN_MAX = 300 # default
+# N_HIDDEN_MAX = 1000 # default
 # N_HIDDEN_MAX = 1200 # default
 # N_HIDDEN_MAX = 600 # default
 # N_HIDDEN_MAX = 1000
 # N_HIDDEN_MAX = 200
 # N_HIDDEN_MAX = 100
 # MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
-MAX_CONNS = 128        # input connections per unit
-# LEAKY_RELU_SLOPE = 0.01
-LEAKY_RELU_SLOPE = 1.0
-# MAX_CONNS = 1569        # input connections per unit 
-# MAX_CONNS = 785        # input connections per unit 
+# MAX_CONNS = 128        # input connections per unit
+LEAKY_RELU_SLOPE = 0.01
+# LEAKY_RELU_SLOPE = 1.0
+MAX_CONNS = 1569        # input connections generated per unit 
+# MAX_CONNS = 128        # input connections per unit 
 # * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks), 
 # * or 1569 with the bias.
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
-# BLOCK_SIZE = 500      # = prune_frequency # ! default
+BLOCK_SIZE = 500      # = prune_frequency # ! default
 # BLOCK_SIZE = 20_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 290_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 190_000      # = prune_frequency # ! default
-BLOCK_SIZE = 19_000      # = prune_frequency # ! default
+# BLOCK_SIZE = 19_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 200      # = prune_frequency # ! default
 # BLOCK_SIZE = 1000      # = prune_frequency # ! default
 # BLOCK_SIZE = 500      # = prune_frequency
@@ -63,24 +68,32 @@ BLOCK_SIZE = 19_000      # = prune_frequency # ! default
 # BLOCK_SIZE = 5000      # = prune_frequency
 # BLOCK_SIZE = 10_000      # = prune_frequency
 # BLOCK_SIZE = 50000      # = prune_frequency
-TOTAL_STEPS = 200_000
+TOTAL_STEPS = 500_000
 # TOTAL_STEPS = 300_000
 # TOTAL_STEPS = 100_000
 # CONNECTION_BUDGET = 3000
 # CONNECTION_BUDGET = 5000
 # CONNECTION_BUDGET = 50000
 # CONNECTION_BUDGET = 10000
-CONNECTION_BUDGET = 20000
+# CONNECTION_BUDGET = 20000
+# CONNECTION_BUDGET = 159000
+# CONNECTION_BUDGET = 1590
+# CONNECTION_BUDGET = 1440 # 1590 - 149 of connections that get spawned in each unit
+# CONNECTION_BUDGET = 79350 # 79500 - 149 of connections that get spawned in each unit for 10 blocksparse
+CONNECTION_BUDGET = 6000 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20000
 
 # PRUNE_PER_BLOCK = 0 # Default  
+PRUNE_PER_BLOCK = 129 # Default  
+# PRUNE_PER_BLOCK = 149 # Default  
 # PRUNE_PER_BLOCK = 1066 # Default  
 # PRUNE_PER_BLOCK = 1266 # Default  
-PRUNE_PER_BLOCK = 130 # Default  
+# PRUNE_PER_BLOCK = 130 # Default  
 # PRUNE_PER_BLOCK = 200 # Default  
 # PRUNE_PER_BLOCK = 784 # Default  
+# PRUNE_PER_BLOCK = 1460 # Default  
 # PRUNE_PER_BLOCK = 784 # Default  
 # PRUNE_PER_BLOCK = 1466 # Default  
 # PRUNE_PER_BLOCK = 106 # Default  
@@ -116,15 +129,15 @@ WEIGHT_DECAY = 0.0
 
 
 ### ! Below settings for I guess a default culling
-# GENERATE_MODE = "FULL"
-GENERATE_MODE = "NO_GENERATE"
+GENERATE_MODE = "FULL"
+# GENERATE_MODE = "NO_GENERATE"
 # NO_GENERATE
 # GENERATE_MODE = "RANDOM_SPARSE"
 FC_ISOLATED_DEFAULT = False
 # FC_ISOLATED_DEFAULT = True # for fully connected, sets whether cross-task connections are prevented
 
-SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
-# SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
+# SKIP_LAST_CULL = False # If true, doesn't do the last prune/generate for the last block before validation
+SKIP_LAST_CULL = True # If true, doesn't do the last prune/generate for the last block before validation
 
 AUX_HEBBIAN_MODE_DEFAULT = 'none'
 # AUX_HEBBIAN_MODE_DEFAULT = 'post_activation'
@@ -159,21 +172,27 @@ CULL_UTILITY_MODE_DEFAULT = 'original'
 # SEED = 421
 SEED = 6969
 
-USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
-# USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
+# USE_BIAS_FEATURE = False  # when True, appends one always-1 bias input
+USE_BIAS_FEATURE = True  # when True, appends one always-1 bias input
 
 
-PER_PIXEL_NORMALIZE = False
-# PER_PIXEL_NORMALIZE = True
+# PER_PIXEL_NORMALIZE = False
+PER_PIXEL_NORMALIZE = True
+
 
 # ══════════════════════════════════════════════════════════════════════
 # MLFLOW CONFIG
 # ══════════════════════════════════════════════════════════════════════
+
+# PER_UNIT_LOG_MAX_UNITS = 50  # log per-unit metrics only when active units <= this
+PER_UNIT_LOG_MAX_UNITS = 0  # log per-unit metrics only when active units <= this
+
 MLFLOW_TRACKING_URI = "http://localhost:5000"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_prune_and_gen"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_bias_comparison_weight_test"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_different_time_magnitude_check"
-MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_per_pixel_normalize_test"
+# MLFLOW_EXPERIMENT_NAME = "benchmarking_current_advances"
+MLFLOW_EXPERIMENT_NAME = "benchmark_double_mnist_10_units"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_prune_784_test"
 # GLOBAL_RUN_NAME = "run_group_1"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "SEED43_NOCROSSTASK_double_mnist_fully_connected_600n_NO_BIAS"  # appended with experiment name for each run
@@ -181,7 +200,8 @@ MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_per_pixel_normalize_test"
 # GLOBAL_RUN_NAME = "prune_200_once"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "bias:"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "NORMALIZE 200k bias cull 130 every16k"  # appended with experiment name for each run
-GLOBAL_RUN_NAME = "cull adam baseline 200k no bias 130 every16k"  # appended with experiment name for each run
+# GLOBAL_RUN_NAME = "cull adam baseline 200k no bias 130 every16k"  # appended with experiment name for each run
+GLOBAL_RUN_NAME = ""  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "200k bias cull"  # appended with experiment name for each run
 
 
@@ -913,10 +933,26 @@ def init_custom_units(seed, unit_specs_list):
 def _eval_batch_loss(Wi, Wo, Mi, Mo, imgs, lbls):
     return jax.vmap(lambda x, y: loss_ce(Wi, Wo, Mi, Mo, x, y))(imgs, lbls).mean()
 
+@jax.jit
+def _eval_batch_accuracy(Wi, Wo, Mi, Mo, imgs, lbls):
+    def one(x, y):
+        raw, _ = forward(Wi, Wo, Mi, Mo, x)
+        preds = jnp.argmax(raw.reshape(N_TASKS, NUM_CLASSES), axis=-1)
+        return jnp.mean(preds == y)
+    return jax.vmap(one)(imgs, lbls).mean()
+
+@jax.jit
+def _eval_per_task_accuracy_full(Wi, Wo, Mi, Mo, imgs, lbls):
+    def one(x, y):
+        raw, _ = forward(Wi, Wo, Mi, Mo, x)
+        preds = jnp.argmax(raw.reshape(N_TASKS, NUM_CLASSES), axis=-1)
+        return (preds == y).astype(jnp.float32)
+    return jax.vmap(one)(imgs, lbls).mean(axis=0)
+
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
-                   optimizer='sgd', n_hidden_init=10, permute_period=0,
-                   seed=SEED, fully_connected_init=False, fc_isolated=FC_ISOLATED_DEFAULT,
+                   optimizer='sgd', n_hidden_init=4, permute_period=0,
+                   seed=SEED, fully_connected_init=True, fc_isolated=FC_ISOLATED_DEFAULT,
                    skip_last_cull=SKIP_LAST_CULL,
                    aux_hebbian_mode=AUX_HEBBIAN_MODE_DEFAULT,
                    cull_utility_mode=CULL_UTILITY_MODE_DEFAULT,
@@ -972,11 +1008,24 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             bound = jnp.sqrt(3.0 / INPUT_PER_TASK)
             Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound) * Mi
         else:
-            Mi = jnp.ones((N_HIDDEN_MAX, INPUT_DIM), dtype=jnp.int32)
-            Mo = jnp.ones((OUTPUT_DIM, N_HIDDEN_MAX), dtype=jnp.int32)
+            h = n_hidden_init  # <-- THIS is the key fix
+
+            Mi_np = np.zeros((N_HIDDEN_MAX, INPUT_DIM), dtype=np.int32)
+            Mo_np = np.zeros((OUTPUT_DIM, N_HIDDEN_MAX), dtype=np.int32)
+
+            Mi_np[:h, :] = 1
+            Mo_np[:, :h] = 1
+
+            Mi = jnp.array(Mi_np)
+            Mo = jnp.array(Mo_np)
+
             rng, wk = jax.random.split(rng)
             bound = jnp.sqrt(3.0 / INPUT_DIM)
-            Wi = jax.random.uniform(wk, (N_HIDDEN_MAX, INPUT_DIM), minval=-bound, maxval=bound)
+
+            Wi = jax.random.uniform(
+                wk, (N_HIDDEN_MAX, INPUT_DIM),
+                minval=-bound, maxval=bound
+            ) * Mi
     else:
         for _ in range(n_hidden_init):
             rng, gk = jax.random.split(rng)
@@ -1085,16 +1134,15 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             Uo = Uo * Mo
             Ho = Ho * Mo
 
-            # Generate to fill budget — negative budget exits while_loop immediately
-            if not fully_connected_init:
-                gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
-                rng, gk = jax.random.split(rng)
-                if GENERATE_MODE == "RANDOM_SPARSE":
-                    Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
-                if GENERATE_MODE == "NO_GENERATE":
-                    continue
-                else:
-                    Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
+            gen_budget = jnp.int32(CONNECTION_BUDGET) - (Mi.sum() + Mo.sum()).astype(jnp.int32)
+            rng, gk = jax.random.split(rng)
+
+            if GENERATE_MODE == "RANDOM_SPARSE":
+                Wi, Wo, Mi, Mo = generate_fill_sparse(Wi, Wo, Mi, Mo, gen_budget, gk)
+            elif GENERATE_MODE == "NO_GENERATE":
+                pass
+            else:
+                Wi, Wo, Mi, Mo = generate_fill(Wi, Wo, Mi, Mo, gen_budget, gk, all_out)
         else:
             ntp = jnp.int32(0)
 
@@ -1106,10 +1154,12 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             na = int(np.array((Mi.sum(axis=1) + Mo.sum(axis=0)) > 0).sum())
             nc2 = int(Mi.sum() + Mo.sum())
             batch_loss = float(_eval_batch_loss(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
-            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={int(ntp):3d} loss={batch_loss:.4f}')
+            batch_acc = float(_eval_batch_accuracy(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
+            print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d} units={na:3d} pruned={int(ntp):3d} loss={batch_loss:.4f} acc={batch_acc:.4f}')
             if mlflow.active_run():
                 mlflow.log_metrics({
                     'train_loss': batch_loss,
+                    'train_accuracy': batch_acc,
                     'n_connections': nc2,
                     'n_units': na,
                     'n_pruned': int(ntp),
@@ -1123,9 +1173,13 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     imgs_j, lbls_j = jnp.array(test_imgs), jnp.array(test_lbls)
 
     per_task_losses = np.array(_eval_per_task_loss_full(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
+    per_task_accs = np.array(_eval_per_task_accuracy_full(Wi, Wo, Mi, Mo, imgs_j, lbls_j))
     final_loss = float(per_task_losses.mean())
-    per_task_str = '  '.join(f'T{t}={per_task_losses[t]:.4f}' for t in range(N_TASKS))
-    print(f'  Final loss: {final_loss:.4f}  (per task: {per_task_str})')
+    final_acc = float(per_task_accs.mean())
+    per_task_loss_str = '  '.join(f'T{t}={per_task_losses[t]:.4f}' for t in range(N_TASKS))
+    per_task_acc_str = '  '.join(f'T{t}={per_task_accs[t]:.4f}' for t in range(N_TASKS))
+    print(f'  Final loss: {final_loss:.4f}  (per task: {per_task_loss_str})')
+    print(f'  Final acc:  {final_acc:.4f}  (per task: {per_task_acc_str})')
 
     mip, mop, mie = measure_purity(Mi, Mo)
 
@@ -1137,40 +1191,44 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             'out_purity': mop,
             'in_entropy': mie,
             'final_loss': final_loss,
+            'final_accuracy': final_acc,
         }
         for t in range(N_TASKS):
             final_metrics[f'task_{t}_final_loss'] = float(per_task_losses[t])
+            final_metrics[f'task_{t}_final_accuracy'] = float(per_task_accs[t])
         for t, (loss_full, loss_isolated, delta) in enumerate(task_val):
             final_metrics[f'task_{t}_loss_full'] = loss_full
             final_metrics[f'task_{t}_loss_isolated'] = loss_isolated
             final_metrics[f'task_{t}_delta'] = delta
         Mi_np, Mo_np, Wi_np = np.array(Mi), np.array(Mo), np.array(Wi)
-        for h in range(N_HIDDEN_MAX):
-            if not (Mi_np[h].any() or Mo_np[:, h].any()):
-                continue
-            for t in range(N_TASKS):
-                sl = slice(t * INPUT_PER_TASK, (t + 1) * INPUT_PER_TASK)
-                mask_t = Mi_np[h, sl]
-                n_in = int(mask_t.sum())
-                final_metrics[f'unit_{h}_in_t{t}'] = n_in
-                final_metrics[f'unit_{h}_out_t{t}'] = int(
-                    Mo_np[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h].sum()
-                )
-                active_w = np.abs(Wi_np[h, sl][mask_t.astype(bool)])
-                final_metrics[f'unit_{h}_avg_w_in_t{t}'] = float(active_w.mean() if n_in > 0 else 0.0)
-                if t == 0:
-                    final_metrics[f'unit_{h}_min_w_in_t0'] = float(active_w.min() if n_in > 0 else 0.0)
-                    final_metrics[f'unit_{h}_max_w_in_t0'] = float(active_w.max() if n_in > 0 else 0.0)
-                if t == 1:
-                    final_metrics[f'unit_{h}_min_w_in_t1'] = float(active_w.min() if n_in > 0 else 0.0)
-                    final_metrics[f'unit_{h}_max_w_in_t1'] = float(active_w.max() if n_in > 0 else 0.0)
-            if USE_BIAS_FEATURE:
-                final_metrics[f'unit_{h}_in_bias'] = int(Mi_np[h, -1])
-                if Mi_np[h, -1]:
-                    final_metrics[f'unit_{h}_w_bias'] = float(np.abs(Wi_np[h, -1]))
+        n_active_units = int(np.sum(Mi_np.any(axis=1) | Mo_np.any(axis=0)))
+        if n_active_units <= PER_UNIT_LOG_MAX_UNITS:
+            for h in range(N_HIDDEN_MAX):
+                if not (Mi_np[h].any() or Mo_np[:, h].any()):
+                    continue
+                for t in range(N_TASKS):
+                    sl = slice(t * INPUT_PER_TASK, (t + 1) * INPUT_PER_TASK)
+                    mask_t = Mi_np[h, sl]
+                    n_in = int(mask_t.sum())
+                    final_metrics[f'unit_{h}_in_t{t}'] = n_in
+                    final_metrics[f'unit_{h}_out_t{t}'] = int(
+                        Mo_np[t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h].sum()
+                    )
+                    active_w = np.abs(Wi_np[h, sl][mask_t.astype(bool)])
+                    final_metrics[f'unit_{h}_avg_w_in_t{t}'] = float(active_w.mean() if n_in > 0 else 0.0)
+                    if t == 0:
+                        final_metrics[f'unit_{h}_min_w_in_t0'] = float(active_w.min() if n_in > 0 else 0.0)
+                        final_metrics[f'unit_{h}_max_w_in_t0'] = float(active_w.max() if n_in > 0 else 0.0)
+                    if t == 1:
+                        final_metrics[f'unit_{h}_min_w_in_t1'] = float(active_w.min() if n_in > 0 else 0.0)
+                        final_metrics[f'unit_{h}_max_w_in_t1'] = float(active_w.max() if n_in > 0 else 0.0)
+                if USE_BIAS_FEATURE:
+                    final_metrics[f'unit_{h}_in_bias'] = int(Mi_np[h, -1])
+                    if Mi_np[h, -1]:
+                        final_metrics[f'unit_{h}_w_bias'] = float(np.abs(Wi_np[h, -1]))
         mlflow.log_metrics(final_metrics)
 
-    return mip, mop, mie, final_loss, task_val
+    return mip, mop, mie, final_loss, final_acc, task_val
 
 # ══════════════════════════════════════════════════════════════════════
 # EXPERIMENTS
@@ -1179,6 +1237,17 @@ def run_experiment(name, mnist_images, mnist_labels, *,
 EXPERIMENTS = [
     # ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
     # ('Baseline', {}),
+
+    #  ('baseline - hebbian',
+    #  dict(
+    #     # utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='product',
+    #       ),
+    # ),
+
+   
+
     # # # ('5. IDBD optimizer', dict(optimizer='idbd')),
     # # ('2. Fractional propagated', dict(utility='fractional_propagated')),
     # ('IDBD',
@@ -1186,25 +1255,35 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    # ('Adamw optimizer + contribution utility',
-    #  dict(optimizer='adamw')),
+    # ('Baseline', {}),
+
+    ('Adamw optimizer + contribution utility',
+     dict(optimizer='adamw')),
 
     # ('Adamw + edan cross-entropy utility',
     #  dict(optimizer='adamw', utility='edan_cross_entropy')),
 
     # ('Adamw_weight_decay + contribution utility',
     #  dict(optimizer='adamw_weight_decay')),
+
     # # ('Adamw_weight_decay + edan cross-entropy utility',
     # #  dict(optimizer='adamw_weight_decay', utility='edan_cross_entropy')),
     # # ('Adamw_weight_decay + fractional propagated',
     # #  dict(optimizer='adamw_weight_decay', utility='fractional_propagated')),
 
-    # # ('Adamw_weight_decay + fractional propagated, hebbian only',
-    # #  dict(optimizer='adamw_weight_decay', 
-    # #     utility='fractional_propagated',
-    # #     aux_hebbian_mode='post_activation',
-    # #     cull_utility_mode='hebbian', 
-    # # )),
+    # ('Adamw_weight_decay + fractional propagated, hebbian only',
+    #  dict(optimizer='adamw_weight_decay', 
+    #     utility='fractional_propagated',
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian', 
+    # )),
+    ('Adamw_weight_decay + contribution, hebbian only',
+     dict(optimizer='adamw_weight_decay', 
+        aux_hebbian_mode='post_activation',
+        cull_utility_mode='hebbian', 
+    )),
+
+
 
     # ('Adamw_weight_decay + fractional propagated, hebbian product',
     #  dict(optimizer='adamw_weight_decay', 
@@ -1361,11 +1440,11 @@ EXPERIMENTS = [
     #     ),
     # ),
 
-    ('adamw: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
-     dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
-        optimizer='adamw_weight_decay',
-     ),
-    ),
+    # ('adamw: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
+    #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
+    #     optimizer='adamw_weight_decay',
+    #  ),
+    # ),
 
     # ('adamw fractional propagated: 1 cross-task unit, 784 input on both, 10 outputs only on task 0',
     #  dict(custom_init=unit_specs(1, n_in_t0=784, n_out_t0=10, n_in_t1=784, n_out_t1=0),
@@ -1460,23 +1539,23 @@ if __name__ == '__main__':
                 'input_per_task': INPUT_PER_TASK,
                 'num_classes': NUM_CLASSES,
             })
-            ip, op, ie, fl, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
-        results[name] = (ip, op, ie, fl, task_val)
+            ip, op, ie, fl, fa, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
+        results[name] = (ip, op, ie, fl, fa, task_val)
 
     print(f'\n{"=" * 85}')
     print('SUMMARY')
     print(f'{"=" * 85}')
-    print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8}')
-    print('-' * 85)
-    for name, (ip, op, ie, fl, task_val) in results.items():
+    print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8} {"Acc":>7}')
+    print('-' * 95)
+    for name, (ip, op, ie, fl, fa, task_val) in results.items():
         flag = ' <--' if ip < 0.8 else ''
-        print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f} {fl:>8.4f}{flag}')
+        print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f} {fl:>8.4f} {fa:>7.4f}{flag}')
 
     print(f'\n{"=" * 85}')
     print('SINGLE-TASK INPUT VALIDATION SUMMARY')
     print(f'  (Δloss = single-task loss minus full-input loss; pure network → Δ≈0, other_mag≈0)')
     print(f'{"=" * 85}')
-    for name, (ip, op, ie, fl, task_val) in results.items():
+    for name, (ip, op, ie, fl, fa, task_val) in results.items():
         print(f'\n  {name}')
         for t, (loss_full, loss_isolated, delta) in enumerate(task_val):
             flag = '  <-- relies on other inputs' if delta > 0.01 else ''

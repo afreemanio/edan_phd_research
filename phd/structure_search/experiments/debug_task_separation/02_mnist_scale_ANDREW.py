@@ -37,8 +37,9 @@ OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 # N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 200 # default
 # N_HIDDEN_MAX = 1000 # default
-# N_HIDDEN_MAX = 10 # default
-N_HIDDEN_MAX = 100 # default
+# N_HIDDEN_MAX = 5 # default
+# N_HIDDEN_MAX = 100 # default
+N_HIDDEN_MAX = 10 # default
 # N_HIDDEN_MAX = 300 # default
 # N_HIDDEN_MAX = 1000 # default
 # N_HIDDEN_MAX = 1200 # default
@@ -50,8 +51,12 @@ N_HIDDEN_MAX = 100 # default
 # MAX_CONNS = 128        # input connections per unit
 LEAKY_RELU_SLOPE = 0.01
 # LEAKY_RELU_SLOPE = 1.0
+# MAX_CONNS = 1569        # input connections generated per unit 
 MAX_CONNS = 1569        # input connections generated per unit 
+# MAX_CONNS = 785        # input connections generated per unit 
+# MAX_CONNS = 785        # input connections generated per unit 
 # MAX_CONNS = 128        # input connections per unit 
+# MAX_CONNS = 775        # ! for 10 units, SPARSE_BASELINE
 # * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks), 
 # * or 1569 with the bias.
 
@@ -80,7 +85,8 @@ TOTAL_STEPS = 500_000
 # CONNECTION_BUDGET = 1590
 # CONNECTION_BUDGET = 1440 # 1590 - 149 of connections that get spawned in each unit
 # CONNECTION_BUDGET = 79350 # 79500 - 149 of connections that get spawned in each unit for 10 blocksparse
-CONNECTION_BUDGET = 6000 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
+# CONNECTION_BUDGET = 6000 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
+CONNECTION_BUDGET = 7950 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20000
@@ -951,7 +957,7 @@ def _eval_per_task_accuracy_full(Wi, Wo, Mi, Mo, imgs, lbls):
 
 def run_experiment(name, mnist_images, mnist_labels, *,
                    utility='contribution', generation='all_output',
-                   optimizer='sgd', n_hidden_init=4, permute_period=0,
+                   optimizer='sgd', n_hidden_init=5, permute_period=0,
                    seed=SEED, fully_connected_init=True, fc_isolated=FC_ISOLATED_DEFAULT,
                    skip_last_cull=SKIP_LAST_CULL,
                    aux_hebbian_mode=AUX_HEBBIAN_MODE_DEFAULT,
@@ -1255,16 +1261,16 @@ EXPERIMENTS = [
     # # ('4. Adam optimizer',
     # #  dict(optimizer='adam')),
 
-    # ('Baseline', {}),
+    ('Baseline', {}),
 
-    ('Adamw optimizer + contribution utility',
-     dict(optimizer='adamw')),
+    # ('Adamw optimizer',
+    #  dict(optimizer='adamw')),
 
     # ('Adamw + edan cross-entropy utility',
     #  dict(optimizer='adamw', utility='edan_cross_entropy')),
 
-    # ('Adamw_weight_decay + contribution utility',
-    #  dict(optimizer='adamw_weight_decay')),
+    ('Adamw_weight_decay',
+     dict(optimizer='adamw_weight_decay')),
 
     # # ('Adamw_weight_decay + edan cross-entropy utility',
     # #  dict(optimizer='adamw_weight_decay', utility='edan_cross_entropy')),
@@ -1277,11 +1283,11 @@ EXPERIMENTS = [
     #     aux_hebbian_mode='post_activation',
     #     cull_utility_mode='hebbian', 
     # )),
-    ('Adamw_weight_decay + contribution, hebbian only',
-     dict(optimizer='adamw_weight_decay', 
-        aux_hebbian_mode='post_activation',
-        cull_utility_mode='hebbian', 
-    )),
+    # ('Adamw_weight_decay + contribution, hebbian only',
+    #  dict(optimizer='adamw_weight_decay', 
+    #     aux_hebbian_mode='post_activation',
+    #     cull_utility_mode='hebbian', 
+    # )),
 
 
 

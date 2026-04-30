@@ -1,0 +1,79 @@
+# Dataset
+dataset:
+  name: double_mnist
+  n_tasks: 2
+  num_classes: 10
+  input_per_task: 784
+  per_pixel_normalize: true
+  permute_period: 0
+
+# Model (multilayer sparse network)
+model:
+  n_hidden_layers: 2
+  n_hidden_max_per_layer: [100, 100]
+  leaky_relu_slope: 0.01
+  use_bias_feature: true
+  n_hidden_init_per_layer: [2, 2]
+  # null entries mean fully connected for that edge
+  init_conns_per_layer: [1569, null]
+
+# Optimizer
+optimizer:
+  name: sgd
+  sgd_lr: 1.0e-3
+  adam_lr: 1.0e-4
+  adamw_lr: 1.0e-3
+  idbd_init_lr: 1.0e-6
+  meta_learning_rate: 1.0e-3
+  weight_decay: 0.0
+
+# Structure tracker
+structure_tracker:
+  max_conns: 1569              # input connections per unit (input→h0)
+  connection_budget: 3182
+  connection_budget_per_layer: null   # e.g. [2000, 1000, 182]; null = use global budget
+  prune_per_block: 129         # connections to prune each block
+  prune_rate: 0.01             # EMA accumulation rate for prune threshold
+  decay_rate: 0.999            # EMA decay for utility tracking
+  max_new_units_per_step: 20000
+  prune_frequency: 500         # steps between prune+generate (= block_size)
+  generate_strategy: full      # 'full', 'random_sparse', or 'no_generate'
+  skip_last_cull: true
+  gen_units_per_layer: [100, 100]
+  gen_conns_per_layer: [1569, 1]
+  fc_isolated: false
+
+# Training
+train:
+  total_steps: 500000
+  log_freq: 10000
+
+# Utility
+utility:
+  mode: contribution           # 'contribution', 'propagated', 'fractional_propagated', 'edan_cross_entropy'
+  aux_hebbian_mode: none       # 'none' or 'post_activation'
+  cull_utility_mode: original  # 'original', 'hebbian', 'product', 'sum'
+
+# Experiment tracking
+mlflow: true
+mlflow_tracking_uri: "http://localhost:5000"
+mlflow_experiment_name: "multilayer_test"
+mlflow_run_name: ""
+
+# Logging
+per_unit_log_max_units: 0
+
+# Seed sweep
+seed: 6969             # single-run fallback seed (used when seeds list is empty)
+# seeds: [6969]          # list of seeds for preset sweep
+seeds: [1, 2, 4, 5, 6,]          # list of seeds for preset sweep
+
+# Preset sweep
+# Available presets: DENSE, TASKWISE-DENSE, SPARSE, CUSTOM
+# CUSTOM uses the pruner+generator with config settings; optionally borrows init
+# from a named baseline via custom_init_from.
+run_presets:
+  - DENSE
+  - TASKWISE-DENSE
+  - SPARSE
+custom_init_from: ""   # set to DENSE / TASKWISE-DENSE / SPARSE to seed CUSTOM from there

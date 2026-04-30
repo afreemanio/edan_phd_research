@@ -7,14 +7,35 @@ partial input connectivity, and the script's batch pruning + EMA mechanism.
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
+import contextlib
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import mlflow
+import hydra
+from omegaconf import DictConfig, OmegaConf
 from phd.jax_core.optimizers.idbd_jacobian import IDBDState, optax_idbd
 from functools import partial
 import time
+
+
+@contextlib.contextmanager
+def _null_context():
+    yield
+
+
+@dataclass
+class PresetConfig:
+    """Named structural preset for one comparative condition."""
+    name: str
+    run_kwargs: Dict[str, Any]
+    prune_per_block: Optional[int] = 0    # None → use global PRUNE_PER_BLOCK
+    generate_mode: Optional[str] = 'NO_GENERATE'  # None → use global GENERATE_MODE
+    description: str = ''
+
 
 # ══════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -27,34 +48,13 @@ INPUT_DIM = INPUT_PER_TASK * N_TASKS   # 1568
 OUTPUT_DIM = NUM_CLASSES * N_TASKS     # 20
 
 
-# ! n_hidden_init 
-# ! fully_connected_init = False
-# N_HIDDEN_MAX = 100 # default
-N_HIDDEN_MAX = 100 # default
-# N_HIDDEN_MAX = 100 # default
-# N_HIDDEN_MAX = 200 # default
-# N_HIDDEN_MAX = 1000 # default
-# N_HIDDEN_MAX = 100 # default
-# N_HIDDEN_MAX = 200 # default
-# N_HIDDEN_MAX = 300 # default
-# N_HIDDEN_MAX = 200 # default
-# N_HIDDEN_MAX = 1000 # default
-# N_HIDDEN_MAX = 10 # default
-# N_HIDDEN_MAX = 100 # default
-# N_HIDDEN_MAX = 300 # default
-# N_HIDDEN_MAX = 1000 # default
-# N_HIDDEN_MAX = 1200 # default
-# N_HIDDEN_MAX = 600 # default
-# N_HIDDEN_MAX = 1000
-# N_HIDDEN_MAX = 200
-# N_HIDDEN_MAX = 100
-# MAX_CONNS = 64        # input connections per unit (half of script's 128) # default
-# MAX_CONNS = 128        # input connections per unit
+# Per-layer unit caps; one entry per hidden layer, must match N_HIDDEN_LAYERS
+N_HIDDEN_MAX_PER_LAYER = (100, 100)
 LEAKY_RELU_SLOPE = 0.01
 # LEAKY_RELU_SLOPE = 1.0
-MAX_CONNS = 1569        # input connections generated per unit 
-# MAX_CONNS = 128        # input connections per unit 
-# * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks), 
+MAX_CONNS = 1569        # input connections generated per unit (input -> first hidden layer)
+# MAX_CONNS = 128        # input connections per unit
+# * DOUBLE MNIST HAS 1568 image inputs BY DEFAULT (784 per task × 2 tasks),
 # * or 1569 with the bias.
 
 # Block size is how much data is streamed before a cull happens, and also how long the utility estimate trace is
@@ -85,6 +85,9 @@ TOTAL_STEPS = 500_000
 # CONNECTION_BUDGET = 6000 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
 # CONNECTION_BUDGET = 6000 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
 CONNECTION_BUDGET = 3182 # 7950 - 149 of connections that get spawned in each unit for 10 blocksparse
+# Per-layer connection budget (None = use global CONNECTION_BUDGET only)
+# Tuple length must equal N_HIDDEN_LAYERS + 1; index i = edge i budget
+CONNECTION_BUDGET_PER_LAYER = None  # e.g. (2000, 1000, 182)
 PRUNE_RATE = 0.01 # default
 EMA_DECAY = 0.999
 MAX_GEN_PER_STEP = 20000
@@ -149,6 +152,8 @@ CULL_UTILITY_MODE_DEFAULT = 'original'
 # CULL_UTILITY_MODE_DEFAULT = 'hebbian'
 # CULL_UTILITY_MODE_DEFAULT = 'product'
 # options: 'original', 'hebbian', 'product', 'sum'
+UTILITY_MODE_DEFAULT = 'contribution'
+OPTIMIZER_DEFAULT = 'sgd'
 
 
 # # ! EDAN_DEFAULT_SETTINGS:
@@ -196,7 +201,7 @@ MLFLOW_TRACKING_URI = "http://localhost:5000"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_bias_comparison_weight_test"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_different_time_magnitude_check"
 # MLFLOW_EXPERIMENT_NAME = "benchmarking_current_advances"
-MLFLOW_EXPERIMENT_NAME = "multilayer_test"
+MLFLOW_EXPERIMENT_NAME = "new_multilayer_test_01"
 # MLFLOW_EXPERIMENT_NAME = "double_mnist_single_unit_prune_784_test"
 # GLOBAL_RUN_NAME = "run_group_1"  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "SEED43_NOCROSSTASK_double_mnist_fully_connected_600n_NO_BIAS"  # appended with experiment name for each run
@@ -260,7 +265,27 @@ class ParallelMNIST:
 # multilayer experiments. The code below is written for any positive value,
 # but the generation policy is intentionally conservative and path-based.
 N_HIDDEN_LAYERS = 2
-HIDDEN_SIZES = tuple([N_HIDDEN_MAX] * N_HIDDEN_LAYERS)
+assert len(N_HIDDEN_MAX_PER_LAYER) == N_HIDDEN_LAYERS, (
+    f"N_HIDDEN_MAX_PER_LAYER length {len(N_HIDDEN_MAX_PER_LAYER)} != N_HIDDEN_LAYERS {N_HIDDEN_LAYERS}")
+HIDDEN_SIZES = N_HIDDEN_MAX_PER_LAYER
+N_HIDDEN_MAX = max(N_HIDDEN_MAX_PER_LAYER)  # backward-compat alias
+
+# ── Per-layer initialization ────────────────────────────────────────────────
+# Starting units at each hidden layer (random-sparse path and FC non-isolated).
+# FC isolated always fills to N_HIDDEN_MAX_PER_LAYER (original behaviour).
+N_HIDDEN_INIT_PER_LAYER = (2, 2)
+# Init-time connection counts per edge (None = fully connected for that edge).
+# Index 0 = input→h0, index l = h_{l-1}→h_l.
+INIT_CONNS_PER_LAYER = (MAX_CONNS, None)
+
+# ── Per-layer generation ────────────────────────────────────────────────────
+# Maximum units to add per hidden layer per generate_fill call.
+# Since each path adds 1 unit per layer, the effective path cap is
+# min(GEN_UNITS_PER_LAYER); set to N_HIDDEN_MAX_PER_LAYER for no added cap.
+GEN_UNITS_PER_LAYER = N_HIDDEN_MAX_PER_LAYER
+# Connection counts for spawned units per edge (None = fully connected).
+# Index 0 = input→h0 connections, index l = h_{l-1}→h_l connections.
+GEN_CONNS_PER_LAYER = (MAX_CONNS, 1)
 
 
 def layer_dims():
@@ -556,40 +581,63 @@ def cleanup_dead(masks):
 
 @partial(jax.jit, static_argnames=('all_outputs',))
 def generate_unit_path(params, masks, key, all_outputs=True):
-    """Generate one path: random inputs -> one new unit per hidden layer -> outputs."""
-    keys = jax.random.split(key, N_HIDDEN_LAYERS + 3)
+    """Generate one path: random inputs -> one new unit per hidden layer -> outputs.
+
+    Slot search uses per-layer caps from N_HIDDEN_MAX_PER_LAYER.
+    Connection counts per edge are taken from GEN_CONNS_PER_LAYER:
+      index 0 = input->h0 connections, index l = h_{l-1}->h_l connections.
+    None means fully connected for that edge.
+    Middle-edge weights start at 0 (existing convention).
+    """
+    keys = jax.random.split(key, 2 * N_HIDDEN_LAYERS + 4)
     new_params = dict(params)
     new_masks = dict(masks)
 
     slots = []
     has_all = jnp.array(True)
     for h_layer in range(N_HIDDEN_LAYERS):
+        cap = N_HIDDEN_MAX_PER_LAYER[h_layer]
         in_m = masks[f"M{h_layer}"]
         out_m = masks[f"M{h_layer + 1}"]
         active = (in_m.sum(axis=1) + out_m.sum(axis=0)) > 0
-        slot = jnp.argmin(jnp.where(~active, jnp.arange(N_HIDDEN_MAX), N_HIDDEN_MAX))
+        slot = jnp.argmin(jnp.where(~active, jnp.arange(cap), cap))
         has = jnp.any(~active)
         slots.append(slot)
         has_all = has_all & has
 
-    n_conns = min(MAX_CONNS, INPUT_DIM)
+    # Edge 0: input -> h0
+    _gc0 = GEN_CONNS_PER_LAYER[0]
+    n_conns_0 = INPUT_DIM if _gc0 is None else min(_gc0, INPUT_DIM)
     noise = jax.random.uniform(keys[0], (INPUT_DIM,))
     perm = jnp.argsort(noise)
-    im = jnp.zeros(INPUT_DIM, dtype=jnp.int32).at[perm[:n_conns]].set(1)
-    bound = jnp.sqrt(3.0 / n_conns)
+    im = jnp.zeros(INPUT_DIM, dtype=jnp.int32).at[perm[:n_conns_0]].set(1)
+    bound = jnp.sqrt(3.0 / n_conns_0)
     w0 = jax.random.uniform(keys[1], (INPUT_DIM,), minval=-bound, maxval=bound) * im
-
     h0 = slots[0]
     new_params["W0"] = jnp.where(has_all, new_params["W0"].at[h0].set(w0), new_params["W0"])
     new_masks["M0"] = jnp.where(has_all, new_masks["M0"].at[h0].set(im), new_masks["M0"])
 
+    # Middle edges: h_{l-1} -> h_l
+    mid_conn_costs = []
     for h_layer in range(1, N_HIDDEN_LAYERS):
-        prev_h = slots[h_layer - 1]
         h = slots[h_layer]
         wname, mname = f"W{h_layer}", f"M{h_layer}"
-        new_params[wname] = jnp.where(has_all, new_params[wname].at[h, prev_h].set(0.0), new_params[wname])
-        new_masks[mname] = jnp.where(has_all, new_masks[mname].at[h, prev_h].set(1), new_masks[mname])
+        prev_cap = N_HIDDEN_MAX_PER_LAYER[h_layer - 1]
+        _gcl = GEN_CONNS_PER_LAYER[h_layer]
+        n_conns_mid = prev_cap if _gcl is None else min(_gcl, prev_cap)
+        mid_conn_costs.append(n_conns_mid)
+        if _gcl is None:
+            im_mid = jnp.ones(prev_cap, dtype=jnp.int32)
+        else:
+            noise_mid = jax.random.uniform(keys[2 + h_layer], (prev_cap,))
+            perm_mid = jnp.argsort(noise_mid)
+            im_mid = jnp.zeros(prev_cap, dtype=jnp.int32).at[perm_mid[:n_conns_mid]].set(1)
+        # Weights start at 0 (existing convention for generated middle edges)
+        w_mid = jnp.zeros(prev_cap, dtype=jnp.float32)
+        new_params[wname] = jnp.where(has_all, new_params[wname].at[h, :].set(w_mid), new_params[wname])
+        new_masks[mname] = jnp.where(has_all, new_masks[mname].at[h, :].set(im_mid), new_masks[mname])
 
+    # Output edge
     out_edge = N_HIDDEN_LAYERS
     last_h = slots[-1]
     om_all = jnp.ones(OUTPUT_DIM, dtype=jnp.int32)
@@ -599,21 +647,30 @@ def generate_unit_path(params, masks, key, all_outputs=True):
     new_params[f"W{out_edge}"] = jnp.where(has_all, new_params[f"W{out_edge}"].at[:, last_h].set(0.0), new_params[f"W{out_edge}"])
     new_masks[f"M{out_edge}"] = jnp.where(has_all, new_masks[f"M{out_edge}"].at[:, last_h].set(om), new_masks[f"M{out_edge}"])
 
-    cost = jnp.where(all_outputs, n_conns + (N_HIDDEN_LAYERS - 1) + OUTPUT_DIM,
-                     n_conns + (N_HIDDEN_LAYERS - 1) + 1)
+    mid_total = sum(mid_conn_costs)
+    cost = jnp.where(all_outputs,
+                     n_conns_0 + mid_total + OUTPUT_DIM,
+                     n_conns_0 + mid_total + 1)
     return new_params, new_masks, has_all, cost
 
 
 def generate_fill(params, masks, budget, key, all_outputs=True):
     budget_f = float(budget)
+    # GEN_UNITS_PER_LAYER caps how many paths (= units per layer) per call.
+    # Each path adds 1 unit to every hidden layer, so the effective cap is
+    # min(GEN_UNITS_PER_LAYER). Defaults to N_HIDDEN_MAX_PER_LAYER so the
+    # connection budget remains the binding constraint (original behaviour).
+    max_paths = min(GEN_UNITS_PER_LAYER)
+    paths_added = 0
     for _ in range(MAX_GEN_PER_STEP):
-        if budget_f <= 0:
+        if budget_f <= 0 or paths_added >= max_paths:
             break
         key, gk = jax.random.split(key)
         params, masks, gen, cost = generate_unit_path(params, masks, gk, all_outputs)
         if not bool(gen):
             break
         budget_f -= int(cost)
+        paths_added += 1
     return params, masks
 
 
@@ -749,7 +806,7 @@ def measure_purity(masks):
         rows = []
         in_counts = fwd_counts[layer]
         out_counts = bwd_counts[layer]
-        for h in range(N_HIDDEN_MAX):
+        for h in range(N_HIDDEN_MAX_PER_LAYER[layer]):
             ti = int(in_counts[:, h].sum())
             to = int(out_counts[:, h].sum())
             if ti == 0 and to == 0:
@@ -901,37 +958,90 @@ def init_custom_units(seed, unit_specs_list):
             {k: jnp.array(v) for k, v in masks_np.items()})
 
 
-def init_fully_connected(seed, n_hidden_init, fc_isolated):
+def init_fully_connected(seed, n_hidden_init_per_layer, fc_isolated,
+                          init_conns_per_layer=None):
+    """Initialize network with per-layer unit counts.
+
+    fc_isolated=True: each task gets its own isolated sub-network, filling to
+        N_HIDDEN_MAX_PER_LAYER (original behaviour, n_hidden_init_per_layer ignored).
+    fc_isolated=False: n_hidden_init_per_layer[l] units at each layer.
+        Edge connectivity follows init_conns_per_layer[l] (falls back to
+        INIT_CONNS_PER_LAYER when not provided):
+          None  -> fully connected to all upstream units/inputs.
+          int   -> that many randomly chosen upstream connections per unit.
+    """
+    icl = INIT_CONNS_PER_LAYER if init_conns_per_layer is None else tuple(init_conns_per_layer)
     params, masks, _, _ = empty_params_and_masks()
     params_np = {k: np.array(v) for k, v in params.items()}
     masks_np = {k: np.array(v) for k, v in masks.items()}
     rng = np.random.default_rng(seed)
 
     if fc_isolated:
-        units_per_task = N_HIDDEN_MAX // N_TASKS
+        # Fill to per-layer cap, split evenly between tasks (original behaviour)
+        for layer_idx, cap in enumerate(N_HIDDEN_MAX_PER_LAYER):
+            units_per_task = cap // N_TASKS
+            for t in range(N_TASKS):
+                h0, h1 = t * units_per_task, (t + 1) * units_per_task
+                if layer_idx == 0:
+                    n_ic = icl[0]
+                    if n_ic is None:
+                        masks_np['M0'][h0:h1, t * INPUT_PER_TASK:(t + 1) * INPUT_PER_TASK] = 1
+                        if USE_BIAS_FEATURE:
+                            masks_np['M0'][h0:h1, -1] = 1
+                    else:
+                        for h in range(h0, h1):
+                            chosen = rng.choice(INPUT_PER_TASK, size=min(n_ic, INPUT_PER_TASK), replace=False)
+                            masks_np['M0'][h, t * INPUT_PER_TASK + chosen] = 1
+                            if USE_BIAS_FEATURE:
+                                masks_np['M0'][h, -1] = 1
+        for layer in range(1, N_HIDDEN_LAYERS):
+            cur_upt = N_HIDDEN_MAX_PER_LAYER[layer] // N_TASKS
+            prev_upt = N_HIDDEN_MAX_PER_LAYER[layer - 1] // N_TASKS
+            n_ic_mid = icl[layer]
+            for t in range(N_TASKS):
+                h0, h1 = t * cur_upt, (t + 1) * cur_upt
+                ph0, ph1 = t * prev_upt, (t + 1) * prev_upt
+                if n_ic_mid is None:
+                    masks_np[f'M{layer}'][h0:h1, ph0:ph1] = 1
+                else:
+                    prev_count = ph1 - ph0
+                    for h in range(h0, h1):
+                        chosen = rng.choice(prev_count, size=min(n_ic_mid, prev_count), replace=False)
+                        masks_np[f'M{layer}'][h, ph0 + chosen] = 1
         for t in range(N_TASKS):
-            h0, h1 = t * units_per_task, (t + 1) * units_per_task
-            masks_np['M0'][h0:h1, t * INPUT_PER_TASK:(t + 1) * INPUT_PER_TASK] = 1
-            if USE_BIAS_FEATURE:
-                masks_np['M0'][h0:h1, -1] = 1
-            for layer in range(1, N_HIDDEN_LAYERS):
-                masks_np[f'M{layer}'][h0:h1, h0:h1] = 1
+            last_upt = N_HIDDEN_MAX_PER_LAYER[-1] // N_TASKS
+            h0, h1 = t * last_upt, (t + 1) * last_upt
             masks_np[f'M{N_HIDDEN_LAYERS}'][t * NUM_CLASSES:(t + 1) * NUM_CLASSES, h0:h1] = 1
     else:
-        h = n_hidden_init
-        masks_np['M0'][:h, :] = 1
+        # Edge 0: input -> h0
+        h0_count = n_hidden_init_per_layer[0]
+        n_ic = icl[0]
+        if n_ic is None:
+            masks_np['M0'][:h0_count, :] = 1
+        else:
+            for h in range(h0_count):
+                chosen = rng.choice(INPUT_DIM, size=min(n_ic, INPUT_DIM), replace=False)
+                masks_np['M0'][h, chosen] = 1
+
+        # Middle edges: h_{l-1} -> h_l
         for layer in range(1, N_HIDDEN_LAYERS):
-            masks_np[f'M{layer}'][:h, :h] = 1
-        masks_np[f'M{N_HIDDEN_LAYERS}'][:, :h] = 1
+            h_count = n_hidden_init_per_layer[layer]
+            prev_h_count = n_hidden_init_per_layer[layer - 1]
+            n_ic_mid = icl[layer]
+            if n_ic_mid is None:
+                masks_np[f'M{layer}'][:h_count, :prev_h_count] = 1
+            else:
+                for h in range(h_count):
+                    chosen = rng.choice(prev_h_count, size=min(n_ic_mid, prev_h_count), replace=False)
+                    masks_np[f'M{layer}'][h, chosen] = 1
+
+        # Output edge: all outputs to last hidden layer's units
+        masks_np[f'M{N_HIDDEN_LAYERS}'][:, :n_hidden_init_per_layer[-1]] = 1
 
     for i, w in enumerate(edge_names()):
         fan_in = np.maximum(masks_np[f'M{i}'].sum(axis=1, keepdims=True), 1)
         bound = np.sqrt(3.0 / fan_in)
         params_np[w] = rng.uniform(-bound, bound, size=params_np[w].shape) * masks_np[f'M{i}']
-        if i > 0:
-            # Preserve the old convention that newly generated hidden/output edges
-            # start at 0 when masks are grown. Fully connected init still gets weights.
-            pass
     return ({k: jnp.array(v, dtype=jnp.float32) for k, v in params_np.items()},
             {k: jnp.array(v, dtype=jnp.int32) for k, v in masks_np.items()})
 
@@ -963,26 +1073,53 @@ def _eval_per_task_accuracy_full(params, masks, imgs, lbls):
 
 
 def run_experiment(name, mnist_images, mnist_labels, *,
-                   utility='contribution', generation='all_output',
-                   optimizer='sgd', n_hidden_init=2, permute_period=0,
-                   seed=SEED, fully_connected_init=True, fc_isolated=FC_ISOLATED_DEFAULT,
-                   skip_last_cull=SKIP_LAST_CULL,
-                   aux_hebbian_mode=AUX_HEBBIAN_MODE_DEFAULT,
-                   cull_utility_mode=CULL_UTILITY_MODE_DEFAULT,
+                   utility=None, generation='all_output',
+                   optimizer=None, n_hidden_init_per_layer=None, permute_period=None,
+                   seed=None, fully_connected_init=True, fc_isolated=None,
+                   skip_last_cull=None,
+                   aux_hebbian_mode=None,
+                   cull_utility_mode=None,
                    custom_init=None,
-                   n_hidden_layers=N_HIDDEN_LAYERS):
+                   n_hidden_layers=None,
+                   prune_per_block=None,
+                   generate_mode=None,
+                   init_conns_per_layer=None):
+    if utility is None:
+        utility = UTILITY_MODE_DEFAULT
+    if optimizer is None:
+        optimizer = OPTIMIZER_DEFAULT
+    if permute_period is None:
+        permute_period = 0
+    if seed is None:
+        seed = SEED
+    if fc_isolated is None:
+        fc_isolated = FC_ISOLATED_DEFAULT
+    if skip_last_cull is None:
+        skip_last_cull = SKIP_LAST_CULL
+    if aux_hebbian_mode is None:
+        aux_hebbian_mode = AUX_HEBBIAN_MODE_DEFAULT
+    if cull_utility_mode is None:
+        cull_utility_mode = CULL_UTILITY_MODE_DEFAULT
+    if n_hidden_layers is None:
+        n_hidden_layers = N_HIDDEN_LAYERS
+    if prune_per_block is None:
+        prune_per_block = PRUNE_PER_BLOCK
+    if generate_mode is None:
+        generate_mode = GENERATE_MODE
+
     if n_hidden_layers != N_HIDDEN_LAYERS:
         raise ValueError("Set the module-level N_HIDDEN_LAYERS before JIT compilation; dynamic per-run layer counts are not supported.")
 
     utility_mode = utility
     all_out = (generation != 'single_output')
+    n_hil = n_hidden_init_per_layer if n_hidden_init_per_layer is not None else N_HIDDEN_INIT_PER_LAYER
 
     print(f'\n{"=" * 65}')
     print(f'{name}')
     init_desc = (f'custom({len(custom_init)} paths)' if custom_init is not None
                  else ('fc_isolated' if fully_connected_init and fc_isolated
                        else 'fc' if fully_connected_init
-                       else f'random_paths({n_hidden_init})'))
+                       else f'random_paths({n_hil})'))
     print(f'  hidden_layers={N_HIDDEN_LAYERS} utility={utility} aux_hebbian={aux_hebbian_mode} '
           f'cull={cull_utility_mode} gen={generation} opt={optimizer} init={init_desc} '
           f'permute={permute_period} fc_isolated={fc_isolated}')
@@ -996,9 +1133,11 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     if custom_init is not None:
         params, masks = init_custom_units(seed, custom_init)
     elif fully_connected_init:
-        params, masks = init_fully_connected(seed, n_hidden_init, fc_isolated)
+        params, masks = init_fully_connected(seed, n_hil, fc_isolated,
+                                              init_conns_per_layer=init_conns_per_layer)
     else:
-        for _ in range(n_hidden_init):
+        # Generate max(n_hil) paths so every hidden layer reaches its target count.
+        for _ in range(max(n_hil)):
             rng, gk = jax.random.split(rng)
             params, masks, _, _ = generate_unit_path(params, masks, gk, all_out)
 
@@ -1062,7 +1201,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         old_masks = masks
         if not (skip_last_cull and is_last_block):
             active_count = sum(m.sum() for m in masks.values()).astype(jnp.int32)
-            ntp = jnp.minimum(jnp.int32(PRUNE_PER_BLOCK), active_count)
+            ntp = jnp.minimum(jnp.int32(prune_per_block), active_count)
             rng, pk = jax.random.split(rng)
             cull_U = select_cull_utility(U, H, cull_utility_mode)
             masks = batch_prune(cull_U, masks, ntp, pk)
@@ -1072,11 +1211,19 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             H = {w: H[w] * masks[w.replace('W', 'M')] for w in edge_names()}
             acc = acc - ntp.astype(jnp.float32)
 
-            gen_budget = jnp.int32(CONNECTION_BUDGET) - sum(m.sum() for m in masks.values()).astype(jnp.int32)
+            if CONNECTION_BUDGET_PER_LAYER is not None:
+                # Tightest per-layer constraint limits the path generator.
+                per_layer_avail = [
+                    int(CONNECTION_BUDGET_PER_LAYER[i]) - int(masks[f'M{i}'].sum())
+                    for i in range(min(len(CONNECTION_BUDGET_PER_LAYER), N_HIDDEN_LAYERS + 1))
+                ]
+                gen_budget = jnp.int32(max(0, min(per_layer_avail)))
+            else:
+                gen_budget = jnp.int32(CONNECTION_BUDGET) - sum(m.sum() for m in masks.values()).astype(jnp.int32)
             rng, gk = jax.random.split(rng)
-            if GENERATE_MODE == "RANDOM_SPARSE":
+            if generate_mode == "RANDOM_SPARSE":
                 params, masks = generate_fill_sparse(params, masks, gen_budget, gk)
-            elif GENERATE_MODE == "NO_GENERATE":
+            elif generate_mode == "NO_GENERATE":
                 pass
             else:
                 params, masks = generate_fill(params, masks, gen_budget, gk, all_out)
@@ -1166,10 +1313,303 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     return mip, mop, mie, final_loss, final_acc, task_val
 
 # ══════════════════════════════════════════════════════════════════════
+# NAMED PRESETS
+# ══════════════════════════════════════════════════════════════════════
 
-EXPERIMENTS = [
-    # ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
-    ('Baseline', {}),
+def _build_presets(custom_init_from: str = '') -> Dict[str, PresetConfig]:
+    """Build the named preset catalogue.
+
+    Must be called after ``_init_globals`` so that N_HIDDEN_LAYERS, INPUT_PER_TASK,
+    NUM_CLASSES, and USE_BIAS_FEATURE reflect the current config.
+
+    Presets
+    -------
+    DENSE
+        5 fully-connected units (not task-isolated).  Each unit sees all inputs
+        from both tasks and all output classes.  ~8k total connections.
+    TASKWISE-DENSE  (formerly BLOCKSPARSE)
+        5 units per task, fully connected within each task, isolated across tasks.
+        2 × 5 = 10 units total.  ~7.9k connections.
+    SPARSE
+        10 units (not task-isolated).  Each unit sees ~785 random inputs drawn
+        from the full cross-task input space and is fully connected to all outputs.
+    CUSTOM
+        Uses the pruner + generator with all training-loop globals from the config.
+        ``custom_init_from`` (one of 'DENSE', 'TASKWISE-DENSE', 'SPARSE', or '')
+        controls which baseline's initialisation is borrowed; '' = config defaults.
+    """
+    bias_d = 1 if USE_BIAS_FEATURE else 0
+    units_per_task = 5
+    sparse_n = units_per_task * N_TASKS  # 10
+
+    # TASKWISE-DENSE: task-isolated units built via custom_init
+    taskwise_init = (
+        unit_specs(units_per_task, n_in_t0=INPUT_PER_TASK, n_out_t0=NUM_CLASSES)
+        + unit_specs(units_per_task, n_in_t1=INPUT_PER_TASK, n_out_t1=NUM_CLASSES)
+    )
+
+    presets: Dict[str, PresetConfig] = {
+        'DENSE': PresetConfig(
+            name='DENSE',
+            description=(
+                f'{units_per_task} fully-connected units per hidden layer, '
+                'cross-task (not task-isolated)'
+            ),
+            run_kwargs=dict(
+                fully_connected_init=True,
+                fc_isolated=False,
+                n_hidden_init_per_layer=tuple([units_per_task] * N_HIDDEN_LAYERS),
+                init_conns_per_layer=tuple(None for _ in range(N_HIDDEN_LAYERS)),
+            ),
+            prune_per_block=0,
+            generate_mode='NO_GENERATE',
+        ),
+        'TASKWISE-DENSE': PresetConfig(
+            name='TASKWISE-DENSE',
+            description=(
+                f'{units_per_task} fully-connected units per task, '
+                'task-isolated (no cross-task connections)'
+            ),
+            run_kwargs=dict(
+                custom_init=taskwise_init,
+            ),
+            prune_per_block=0,
+            generate_mode='NO_GENERATE',
+        ),
+        'SPARSE': PresetConfig(
+            name='SPARSE',
+            description=(
+                f'{sparse_n} units per hidden layer, '
+                f'~{INPUT_PER_TASK + bias_d} random inputs each from full input space, '
+                'fully connected to all outputs'
+            ),
+            run_kwargs=dict(
+                fully_connected_init=True,
+                fc_isolated=False,
+                n_hidden_init_per_layer=tuple([sparse_n] * N_HIDDEN_LAYERS),
+                # Each unit draws INPUT_PER_TASK + bias connections randomly from
+                # the full cross-task input (not restricted to one task's slice).
+                init_conns_per_layer=(INPUT_PER_TASK + bias_d, None),
+            ),
+            prune_per_block=0,
+            generate_mode='NO_GENERATE',
+        ),
+    }
+
+    # CUSTOM: pruner + generator, optionally borrowing a baseline's initialisation
+    init_from = custom_init_from.strip() if custom_init_from else ''
+    _init_keys = ('fully_connected_init', 'fc_isolated', 'n_hidden_init_per_layer',
+                  'custom_init', 'init_conns_per_layer')
+    if init_from and init_from in presets:
+        custom_kw = {k: v for k, v in presets[init_from].run_kwargs.items()
+                     if k in _init_keys}
+        desc = f'Pruner+generator, initialised from {init_from}'
+    else:
+        custom_kw = {}
+        desc = 'Pruner+generator, global config defaults'
+    presets['CUSTOM'] = PresetConfig(
+        name='CUSTOM',
+        description=desc,
+        run_kwargs=custom_kw,
+        prune_per_block=None,  # use global PRUNE_PER_BLOCK
+        generate_mode=None,    # use global GENERATE_MODE
+    )
+
+    return presets
+
+
+def run_preset_seeds(
+    preset: PresetConfig,
+    seeds: List[int],
+    mnist_images,
+    mnist_labels,
+    use_mlflow: bool,
+) -> List[dict]:
+    """Run ``preset`` once per seed.  Each seed is a separate MLflow run."""
+    all_results = []
+    for seed in seeds:
+        run_name = (
+            f"{GLOBAL_RUN_NAME} | {preset.name} | seed={seed}"
+            if GLOBAL_RUN_NAME else f"{preset.name} | seed={seed}"
+        )
+        kw = {
+            **preset.run_kwargs,
+            'seed': seed,
+            'prune_per_block': preset.prune_per_block,
+            'generate_mode': preset.generate_mode,
+        }
+        ctx = mlflow.start_run(run_name=run_name) if use_mlflow else _null_context()
+        with ctx:
+            if use_mlflow:
+                mlflow.log_params({
+                    'preset': preset.name,
+                    'seed': seed,
+                    'n_tasks': N_TASKS,
+                    'n_hidden_layers': N_HIDDEN_LAYERS,
+                    'n_hidden_max_per_layer': str(N_HIDDEN_MAX_PER_LAYER),
+                    'block_size': BLOCK_SIZE,
+                    'total_steps': TOTAL_STEPS,
+                    'prune_per_block': preset.prune_per_block if preset.prune_per_block is not None else PRUNE_PER_BLOCK,
+                    'generate_mode': preset.generate_mode if preset.generate_mode is not None else GENERATE_MODE,
+                    'connection_budget': CONNECTION_BUDGET,
+                    'optimizer': OPTIMIZER_DEFAULT,
+                    'sgd_lr': SGD_LR,
+                    'adam_lr': ADAM_LR,
+                    'use_bias_feature': USE_BIAS_FEATURE,
+                })
+            ip, op, ie, fl, fa, task_val = run_experiment(
+                f"{preset.name} seed={seed}",
+                mnist_images, mnist_labels,
+                **kw,
+            )
+        all_results.append({
+            'seed': seed, 'ip': ip, 'op': op, 'ie': ie,
+            'fl': fl, 'fa': fa, 'task_val': task_val,
+        })
+    return all_results
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CONFIG → GLOBALS
+# ══════════════════════════════════════════════════════════════════════
+
+def _init_globals(cfg: DictConfig) -> None:
+    """Set all module-level constants from a Hydra DictConfig.
+
+    Must be called before any JIT-compiled function is first invoked.
+    """
+    global N_TASKS, NUM_CLASSES, INPUT_PER_TASK, BIAS_DIM, INPUT_DIM, OUTPUT_DIM
+    global N_HIDDEN_LAYERS, N_HIDDEN_MAX_PER_LAYER, HIDDEN_SIZES, N_HIDDEN_MAX
+    global N_HIDDEN_INIT_PER_LAYER, INIT_CONNS_PER_LAYER
+    global GEN_UNITS_PER_LAYER, GEN_CONNS_PER_LAYER, MAX_CONNS
+    global LEAKY_RELU_SLOPE, USE_BIAS_FEATURE, PER_PIXEL_NORMALIZE
+    global EMA_DECAY, PRUNE_RATE
+    global BLOCK_SIZE, TOTAL_STEPS, CONNECTION_BUDGET, CONNECTION_BUDGET_PER_LAYER
+    global PRUNE_PER_BLOCK, MAX_GEN_PER_STEP
+    global SGD_LR, ADAM_LR, ADAMW_LR, IDBD_INIT_LR, IDBD_META_LR, WEIGHT_DECAY
+    global GENERATE_MODE, FC_ISOLATED_DEFAULT, SKIP_LAST_CULL
+    global UTILITY_MODE_DEFAULT, OPTIMIZER_DEFAULT
+    global AUX_HEBBIAN_MODE_DEFAULT, CULL_UTILITY_MODE_DEFAULT
+    global SEED, PER_UNIT_LOG_MAX_UNITS
+    global MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, GLOBAL_RUN_NAME
+
+    N_TASKS          = cfg.dataset.n_tasks
+    NUM_CLASSES      = cfg.dataset.num_classes
+    INPUT_PER_TASK   = cfg.dataset.input_per_task
+    USE_BIAS_FEATURE = cfg.model.use_bias_feature
+    PER_PIXEL_NORMALIZE = cfg.dataset.per_pixel_normalize
+    BIAS_DIM         = 1 if USE_BIAS_FEATURE else 0
+    INPUT_DIM        = INPUT_PER_TASK * N_TASKS + BIAS_DIM
+    OUTPUT_DIM       = NUM_CLASSES * N_TASKS
+
+    N_HIDDEN_LAYERS        = cfg.model.n_hidden_layers
+    N_HIDDEN_MAX_PER_LAYER = tuple(cfg.model.n_hidden_max_per_layer)
+    assert len(N_HIDDEN_MAX_PER_LAYER) == N_HIDDEN_LAYERS, (
+        f"n_hidden_max_per_layer length {len(N_HIDDEN_MAX_PER_LAYER)} != n_hidden_layers {N_HIDDEN_LAYERS}")
+    HIDDEN_SIZES           = N_HIDDEN_MAX_PER_LAYER
+    N_HIDDEN_MAX           = max(N_HIDDEN_MAX_PER_LAYER)
+    N_HIDDEN_INIT_PER_LAYER = tuple(cfg.model.n_hidden_init_per_layer)
+    INIT_CONNS_PER_LAYER   = tuple(
+        None if v is None else int(v) for v in cfg.model.init_conns_per_layer
+    )
+    LEAKY_RELU_SLOPE       = cfg.model.leaky_relu_slope
+
+    MAX_CONNS              = cfg.structure_tracker.max_conns
+    CONNECTION_BUDGET      = cfg.structure_tracker.connection_budget
+    CONNECTION_BUDGET_PER_LAYER = (
+        None if cfg.structure_tracker.connection_budget_per_layer is None
+        else tuple(cfg.structure_tracker.connection_budget_per_layer)
+    )
+    PRUNE_PER_BLOCK        = cfg.structure_tracker.prune_per_block
+    PRUNE_RATE             = cfg.structure_tracker.prune_rate
+    EMA_DECAY              = cfg.structure_tracker.decay_rate
+    MAX_GEN_PER_STEP       = cfg.structure_tracker.max_new_units_per_step
+    BLOCK_SIZE             = cfg.structure_tracker.prune_frequency
+    GENERATE_MODE          = cfg.structure_tracker.generate_strategy.upper()
+    SKIP_LAST_CULL         = cfg.structure_tracker.skip_last_cull
+    FC_ISOLATED_DEFAULT    = cfg.structure_tracker.fc_isolated
+    GEN_UNITS_PER_LAYER    = tuple(cfg.structure_tracker.gen_units_per_layer)
+    GEN_CONNS_PER_LAYER    = tuple(
+        None if v is None else int(v) for v in cfg.structure_tracker.gen_conns_per_layer
+    )
+
+    TOTAL_STEPS            = cfg.train.total_steps
+
+    OPTIMIZER_DEFAULT      = cfg.optimizer.name
+    SGD_LR                 = cfg.optimizer.sgd_lr
+    ADAM_LR                = cfg.optimizer.adam_lr
+    ADAMW_LR               = cfg.optimizer.adamw_lr
+    IDBD_INIT_LR           = cfg.optimizer.idbd_init_lr
+    IDBD_META_LR           = cfg.optimizer.meta_learning_rate
+    WEIGHT_DECAY           = cfg.optimizer.weight_decay
+
+    UTILITY_MODE_DEFAULT   = cfg.utility.mode
+    AUX_HEBBIAN_MODE_DEFAULT  = cfg.utility.aux_hebbian_mode
+    CULL_UTILITY_MODE_DEFAULT = cfg.utility.cull_utility_mode
+
+    SEED                   = cfg.seed
+    PER_UNIT_LOG_MAX_UNITS = cfg.per_unit_log_max_units
+    MLFLOW_TRACKING_URI    = cfg.mlflow_tracking_uri
+    MLFLOW_EXPERIMENT_NAME = cfg.mlflow_experiment_name
+    GLOBAL_RUN_NAME        = cfg.mlflow_run_name
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════
+
+@hydra.main(config_path='conf', config_name='config', version_base='1.1')
+def main(cfg: DictConfig) -> None:
+    _init_globals(cfg)
+
+    # ── Preset × seed sweep ──────────────────────────────────────────────
+    preset_names: List[str] = list(OmegaConf.to_container(cfg.get('run_presets', []), resolve=True))
+    seeds: List[int] = list(OmegaConf.to_container(cfg.get('seeds', [SEED]), resolve=True)) or [SEED]
+    custom_init_from: str = str(cfg.get('custom_init_from', ''))
+
+    print("Loading MNIST...")
+    mnist_images, mnist_labels = load_mnist()
+    print(f"Loaded {len(mnist_images)} images, shape={mnist_images.shape}")
+
+    if cfg.mlflow:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
+    if preset_names:
+        presets = _build_presets(custom_init_from=custom_init_from)
+        unknown = [p for p in preset_names if p not in presets]
+        if unknown:
+            raise ValueError(f"Unknown preset(s): {unknown}. Available: {list(presets)}")
+
+        all_preset_results: Dict[str, List[dict]] = {}
+        for pname in preset_names:
+            preset = presets[pname]
+            print(f"\n{'='*70}\nPreset: {preset.name}  |  seeds={seeds}")
+            print(f"  {preset.description}")
+            results = run_preset_seeds(preset, seeds, mnist_images, mnist_labels, cfg.mlflow)
+            all_preset_results[pname] = results
+
+        # ── Cross-preset summary ─────────────────────────────────────────
+        print(f'\n{"="*85}')
+        print('PRESET SWEEP SUMMARY  (mean across seeds)')
+        print(f'{"="*85}')
+        print(f'{"Preset":<20} {"Seeds":>5}  {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8} {"Acc":>7}')
+        print('-' * 60)
+        for pname, results in all_preset_results.items():
+            n = len(results)
+            mip = sum(r['ip'] for r in results) / n
+            mop = sum(r['op'] for r in results) / n
+            mie = sum(r['ie'] for r in results) / n
+            mfl = sum(r['fl'] for r in results) / n
+            mfa = sum(r['fa'] for r in results) / n
+            flag = ' <--' if mip < 0.8 else ''
+            print(f'{pname:<20} {n:>5}  {mip:>6.3f} {mop:>7.3f} {mie:>6.3f} {mfl:>8.4f} {mfa:>7.4f}{flag}')
+        return
+
+    # ── Legacy single-run path (no run_presets in config) ────────────────
+    experiments = [
+        # ('1. Baseline (contrib, all_out, SGD, stationary)', {}),
+        ('Baseline', {}),
 
     #  ('baseline - hebbian',
     #  dict(
@@ -1433,45 +1873,44 @@ EXPERIMENTS = [
     #      unit_specs(5, n_in_t0=10, n_out_t0=5, n_in_t1=8,  n_out_t1=4) +
     #      unit_specs(5, n_in_t1=10, n_out_t1=5, n_in_t0=8,  n_out_t0=4)
     #  ))),
-]
-
-if __name__ == '__main__':
-    print("Loading MNIST...")
-    mnist_images, mnist_labels = load_mnist()
-    print(f"Loaded {len(mnist_images)} images, shape={mnist_images.shape}")
-
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+    ]
 
     results = {}
-    for name, kw in EXPERIMENTS:
-        run_name = f"{GLOBAL_RUN_NAME} | {name}"
-        with mlflow.start_run(run_name=run_name):
-            mlflow.log_params({
-                'experiment_name': name,
-                'utility': kw.get('utility', 'contribution'),
-                'optimizer': kw.get('optimizer', 'sgd'),
-                'aux_hebbian_mode': kw.get('aux_hebbian_mode', AUX_HEBBIAN_MODE_DEFAULT),
-                'cull_utility_mode': kw.get('cull_utility_mode', CULL_UTILITY_MODE_DEFAULT),
-                'n_tasks': N_TASKS,
-                'n_hidden_max': N_HIDDEN_MAX,
-                'max_conns': MAX_CONNS,
-                'block_size': BLOCK_SIZE,
-                'total_steps': TOTAL_STEPS,
-                'connection_budget': CONNECTION_BUDGET,
-                'prune_rate': PRUNE_RATE,
-                'ema_decay': EMA_DECAY,
-                'prune_per_block': PRUNE_PER_BLOCK,
-                'seed': SEED,
-                'adamw_lr': ADAMW_LR,
-                'sgd_lr': SGD_LR,
-                'adam_lr': ADAM_LR,
-                'generate_mode': GENERATE_MODE,
-                'skip_last_cull': SKIP_LAST_CULL,
-                'use_bias_feature': USE_BIAS_FEATURE,
-                'input_per_task': INPUT_PER_TASK,
-                'num_classes': NUM_CLASSES,
-            })
+    for name, kw in experiments:
+        run_name = f"{GLOBAL_RUN_NAME} | {name}" if GLOBAL_RUN_NAME else name
+        ctx = mlflow.start_run(run_name=run_name) if cfg.mlflow else _null_context()
+        with ctx:
+            if cfg.mlflow:
+                mlflow.log_params({
+                    'experiment_name': name,
+                    'utility': kw.get('utility', UTILITY_MODE_DEFAULT),
+                    'optimizer': kw.get('optimizer', OPTIMIZER_DEFAULT),
+                    'aux_hebbian_mode': kw.get('aux_hebbian_mode', AUX_HEBBIAN_MODE_DEFAULT),
+                    'cull_utility_mode': kw.get('cull_utility_mode', CULL_UTILITY_MODE_DEFAULT),
+                    'n_tasks': N_TASKS,
+                    'n_hidden_max_per_layer': str(N_HIDDEN_MAX_PER_LAYER),
+                    'n_hidden_init_per_layer': str(N_HIDDEN_INIT_PER_LAYER),
+                    'init_conns_per_layer': str(INIT_CONNS_PER_LAYER),
+                    'gen_units_per_layer': str(GEN_UNITS_PER_LAYER),
+                    'gen_conns_per_layer': str(GEN_CONNS_PER_LAYER),
+                    'max_conns': MAX_CONNS,
+                    'block_size': BLOCK_SIZE,
+                    'total_steps': TOTAL_STEPS,
+                    'connection_budget': CONNECTION_BUDGET,
+                    'connection_budget_per_layer': str(CONNECTION_BUDGET_PER_LAYER),
+                    'prune_rate': PRUNE_RATE,
+                    'ema_decay': EMA_DECAY,
+                    'prune_per_block': PRUNE_PER_BLOCK,
+                    'seed': SEED,
+                    'adamw_lr': ADAMW_LR,
+                    'sgd_lr': SGD_LR,
+                    'adam_lr': ADAM_LR,
+                    'generate_mode': GENERATE_MODE,
+                    'skip_last_cull': SKIP_LAST_CULL,
+                    'use_bias_feature': USE_BIAS_FEATURE,
+                    'input_per_task': INPUT_PER_TASK,
+                    'num_classes': NUM_CLASSES,
+                })
             ip, op, ie, fl, fa, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
         results[name] = (ip, op, ie, fl, fa, task_val)
 
@@ -1494,13 +1933,10 @@ if __name__ == '__main__':
             flag = '  <-- relies on other inputs' if delta > 0.01 else ''
             print(f'    Task {t}:  full={loss_full:.4f}  isolated={loss_isolated:.4f}  '
                   f'Δ={delta:+.4f}{flag}')
-            # delta of 0 -> pure - the task doesn't rely on the other tasks
-            # inputs an an implicit bias own_mag = means |logit| across the 10
-            # output classes for the active task's head. other_mags = same thing
-            # for the inactive task's head, whose inputs were all zeroed.
-            # log_softmax produces uniform predictions (random baseline) when
-            # all logits are near zero. A large mean |logit| means the head is
-            # making confident, peaked predictions — not random.
+
+
+if __name__ == '__main__':
+    main()
 
 
 

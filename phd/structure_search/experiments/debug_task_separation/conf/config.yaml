@@ -15,7 +15,7 @@ model:
   use_bias_feature: true
   n_hidden_init_per_layer: [2]
   # null entries mean fully connected for that edge
-  init_conns_per_layer: [1569, null]
+  init_conns_per_layer: [1569]
 
 # Optimizer
 optimizer:
@@ -30,7 +30,7 @@ optimizer:
 # Structure tracker
 structure_tracker:
   max_conns: 1569              # input connections per unit (input→h0)
-  connection_budget: 3182
+  connection_budget: 6500
   connection_budget_per_layer: null   # e.g. [2000, 1000, 182]; null = use global budget
   prune_per_block: 129         # connections to prune each block
   prune_rate: 0.01             # EMA accumulation rate for prune threshold
@@ -46,7 +46,9 @@ structure_tracker:
 # Training
 train:
   total_steps: 500000
-  log_freq: 10000
+  # log_freq: 10000
+  log_freq: 5000
+  log_mode: interval       # 'interval': every log_freq steps; 'block': every block boundary
 
 # Utility
 utility:
@@ -65,15 +67,15 @@ per_unit_log_max_units: 0
 
 # Seed sweep
 seed: 6969             # single-run fallback seed (used when seeds list is empty)
-seeds: [6969]          # list of seeds for preset sweep
-# seeds: [1, 2, 4, 5, 6,]          # list of seeds for preset sweep
+# seeds: [6969]          # list of seeds for preset sweep
+seeds: [1, 2, 3, 4, 5]          # list of seeds for preset sweep
 
 # Preset sweep
 # Available presets: DENSE, TASKWISE-DENSE, SPARSE, CUSTOM
 # CUSTOM uses the pruner+generator with config settings; optionally borrows init
 # from a named baseline via custom_init_from.
 run_presets:
-  - DENSE
-  - TASKWISE-DENSE
-  - SPARSE
-custom_init_from: ""   # set to DENSE / TASKWISE-DENSE / SPARSE to seed CUSTOM from there
+  - CUSTOM
+  # - TASKWISE-DENSE
+  # - SPARSE
+custom_init_from: "DENSE"   # set to DENSE / TASKWISE-DENSE / SPARSE to seed CUSTOM from there

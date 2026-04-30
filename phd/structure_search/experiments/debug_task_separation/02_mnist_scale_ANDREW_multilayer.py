@@ -213,6 +213,10 @@ MLFLOW_EXPERIMENT_NAME = "new_multilayer_test_01"
 GLOBAL_RUN_NAME = ""  # appended with experiment name for each run
 # GLOBAL_RUN_NAME = "200k bias cull"  # appended with experiment name for each run
 
+# ── Logging ─────────────────────────────────────────────────────────────────
+LOG_FREQ = 10_000   # log every this many steps (used when LOG_MODE='interval')
+LOG_MODE = 'interval'  # 'interval': every LOG_FREQ steps; 'block': every block boundary
+
 
 # Derived
 BIAS_DIM = 1 if USE_BIAS_FEATURE else 0  # single global bias appended after all task inputs
@@ -1049,6 +1053,13 @@ def init_fully_connected(seed, n_hidden_init_per_layer, fc_isolated,
 # EXPERIMENT RUNNER
 # ══════════════════════════════════════════════════════════════════════
 
+def _should_log(step: int, block_idx: int) -> bool:
+    """Return True when this step should emit a training log line."""
+    if LOG_MODE == 'block':
+        return True
+    return LOG_FREQ > 0 and step % LOG_FREQ == 0
+
+
 @jax.jit
 def _eval_batch_loss(params, masks, imgs, lbls):
     return jax.vmap(lambda x, y: loss_ce(params, masks, x, y))(imgs, lbls).mean()
@@ -1187,6 +1198,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
     opt_state = opt.init(params)
     t0 = time.time()
     n_blocks = TOTAL_STEPS // BLOCK_SIZE
+    step_log: List[dict] = []
 
     for bi in range(n_blocks):
         imgs, lbls = stream.sample_block(BLOCK_SIZE)
@@ -1234,7 +1246,7 @@ def run_experiment(name, mnist_images, mnist_labels, *,
         opt_state = _reset_grown_connections(opt_state, masks, old_masks)
 
         step = (bi + 1) * BLOCK_SIZE
-        if step % 10_000 == 0:
+        if _should_log(step, bi):
             masks_np = {k: np.array(v) for k, v in masks.items()}
             units_per_layer = []
             for h_layer in range(N_HIDDEN_LAYERS):
@@ -1248,19 +1260,21 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             units_str = '/'.join(str(u) for u in units_per_layer)
             conns_str = '/'.join(str(c) for c in conns_per_layer)
             print(f'  [{step:>6d}/{TOTAL_STEPS}] conns={nc2:5d}({conns_str}) units={active_units}({units_str}) pruned={int(ntp):3d} loss={batch_loss:.4f} acc={batch_acc:.4f}')
+            step_metrics: dict = {
+                'step': step,
+                'train_loss': batch_loss,
+                'train_accuracy': batch_acc,
+                'n_connections': nc2,
+                'n_hidden_units_total': active_units,
+                'n_pruned': int(ntp),
+            }
+            for i, u in enumerate(units_per_layer):
+                step_metrics[f'n_units_layer_{i}'] = u
+            for i, c in enumerate(conns_per_layer):
+                step_metrics[f'n_connections_layer_{i}'] = c
+            step_log.append(step_metrics)
             if mlflow.active_run():
-                metrics = {
-                    'train_loss': batch_loss,
-                    'train_accuracy': batch_acc,
-                    'n_connections': nc2,
-                    'n_hidden_units_total': active_units,
-                    'n_pruned': int(ntp),
-                }
-                for i, u in enumerate(units_per_layer):
-                    metrics[f'n_units_layer_{i}'] = u
-                for i, c in enumerate(conns_per_layer):
-                    metrics[f'n_connections_layer_{i}'] = c
-                mlflow.log_metrics(metrics, step=step)
+                mlflow.log_metrics({k: v for k, v in step_metrics.items() if k != 'step'}, step=step)
 
     elapsed = time.time() - t0
     print(f'  Done in {elapsed:.1f}s')
@@ -1310,7 +1324,12 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             final_metrics[f'task_{t}_delta'] = delta
         mlflow.log_metrics(final_metrics)
 
-    return mip, mop, mie, final_loss, final_acc, task_val
+    return {
+        'ip': mip, 'op': mop, 'ie': mie,
+        'fl': final_loss, 'fa': final_acc,
+        'task_val': task_val,
+        'step_log': step_log,
+    }
 
 # ══════════════════════════════════════════════════════════════════════
 # NAMED PRESETS
@@ -1418,6 +1437,44 @@ def _build_presets(custom_init_from: str = '') -> Dict[str, PresetConfig]:
     return presets
 
 
+def _log_aggregated_metrics(results: List[dict]) -> None:
+    """Log mean ± std of step-level and final metrics across seeds to the active MLflow run.
+
+    Step-level series: logged as ``<metric>_mean`` / ``<metric>_std`` at each step.
+    Final metrics: logged once as ``final_<metric>_mean`` / ``final_<metric>_std``.
+    """
+    if not results:
+        return
+
+    # ── Aggregate step-level time series ─────────────────────────────────────
+    all_step_logs = [r.get('step_log', []) for r in results]
+    non_empty = [sl for sl in all_step_logs if sl]
+    if non_empty:
+        n_points = min(len(sl) for sl in non_empty)
+        metric_keys = [k for k in non_empty[0][0] if k != 'step']
+        for point_i in range(n_points):
+            step = non_empty[0][point_i]['step']
+            agg: dict = {}
+            for k in metric_keys:
+                vals = [sl[point_i][k] for sl in non_empty if point_i < len(sl)]
+                agg[f'{k}_mean'] = float(np.mean(vals))
+                if len(vals) > 1:
+                    agg[f'{k}_std'] = float(np.std(vals))
+            mlflow.log_metrics(agg, step=step)
+
+    # ── Aggregate final scalars ───────────────────────────────────────────────
+    final_keys = ['fl', 'fa', 'ip', 'op', 'ie']
+    final_agg: dict = {}
+    for k in final_keys:
+        vals = [r[k] for r in results if k in r]
+        if vals:
+            final_agg[f'final_{k}_mean'] = float(np.mean(vals))
+            if len(vals) > 1:
+                final_agg[f'final_{k}_std'] = float(np.std(vals))
+    if final_agg:
+        mlflow.log_metrics(final_agg)
+
+
 def run_preset_seeds(
     preset: PresetConfig,
     seeds: List[int],
@@ -1425,47 +1482,65 @@ def run_preset_seeds(
     mnist_labels,
     use_mlflow: bool,
 ) -> List[dict]:
-    """Run ``preset`` once per seed.  Each seed is a separate MLflow run."""
-    all_results = []
-    for seed in seeds:
-        run_name = (
-            f"{GLOBAL_RUN_NAME} | {preset.name} | seed={seed}"
-            if GLOBAL_RUN_NAME else f"{preset.name} | seed={seed}"
-        )
-        kw = {
-            **preset.run_kwargs,
-            'seed': seed,
-            'prune_per_block': preset.prune_per_block,
-            'generate_mode': preset.generate_mode,
-        }
-        ctx = mlflow.start_run(run_name=run_name) if use_mlflow else _null_context()
-        with ctx:
-            if use_mlflow:
-                mlflow.log_params({
-                    'preset': preset.name,
-                    'seed': seed,
-                    'n_tasks': N_TASKS,
-                    'n_hidden_layers': N_HIDDEN_LAYERS,
-                    'n_hidden_max_per_layer': str(N_HIDDEN_MAX_PER_LAYER),
-                    'block_size': BLOCK_SIZE,
-                    'total_steps': TOTAL_STEPS,
-                    'prune_per_block': preset.prune_per_block if preset.prune_per_block is not None else PRUNE_PER_BLOCK,
-                    'generate_mode': preset.generate_mode if preset.generate_mode is not None else GENERATE_MODE,
-                    'connection_budget': CONNECTION_BUDGET,
-                    'optimizer': OPTIMIZER_DEFAULT,
-                    'sgd_lr': SGD_LR,
-                    'adam_lr': ADAM_LR,
-                    'use_bias_feature': USE_BIAS_FEATURE,
-                })
-            ip, op, ie, fl, fa, task_val = run_experiment(
-                f"{preset.name} seed={seed}",
-                mnist_images, mnist_labels,
-                **kw,
+    """Run ``preset`` once per seed.
+
+    MLflow structure (when enabled):
+    - Parent run per preset: config params + aggregated metrics across seeds.
+    - Child run per seed (nested=True): individual per-step and final metrics.
+    """
+    all_results: List[dict] = []
+    parent_run_name = (
+        f"{GLOBAL_RUN_NAME} | {preset.name}" if GLOBAL_RUN_NAME else preset.name
+    )
+    parent_ctx = mlflow.start_run(run_name=parent_run_name) if use_mlflow else _null_context()
+
+    with parent_ctx:
+        if use_mlflow:
+            mlflow.log_params({
+                'preset': preset.name,
+                'n_seeds': len(seeds),
+                'seeds': str(seeds),
+                'n_tasks': N_TASKS,
+                'n_hidden_layers': N_HIDDEN_LAYERS,
+                'n_hidden_max_per_layer': str(N_HIDDEN_MAX_PER_LAYER),
+                'block_size': BLOCK_SIZE,
+                'total_steps': TOTAL_STEPS,
+                'log_freq': LOG_FREQ,
+                'log_mode': LOG_MODE,
+                'prune_per_block': preset.prune_per_block if preset.prune_per_block is not None else PRUNE_PER_BLOCK,
+                'generate_mode': preset.generate_mode if preset.generate_mode is not None else GENERATE_MODE,
+                'connection_budget': CONNECTION_BUDGET,
+                'optimizer': OPTIMIZER_DEFAULT,
+                'sgd_lr': SGD_LR,
+                'adam_lr': ADAM_LR,
+                'use_bias_feature': USE_BIAS_FEATURE,
+            })
+
+        for seed in seeds:
+            child_run_name = f"{preset.name} | seed={seed}"
+            child_ctx = (
+                mlflow.start_run(run_name=child_run_name, nested=True)
+                if use_mlflow else _null_context()
             )
-        all_results.append({
-            'seed': seed, 'ip': ip, 'op': op, 'ie': ie,
-            'fl': fl, 'fa': fa, 'task_val': task_val,
-        })
+            kw = {
+                **preset.run_kwargs,
+                'seed': seed,
+                'prune_per_block': preset.prune_per_block,
+                'generate_mode': preset.generate_mode,
+            }
+            with child_ctx:
+                if use_mlflow:
+                    mlflow.log_params({'preset': preset.name, 'seed': seed})
+                result = run_experiment(
+                    f"{preset.name} seed={seed}",
+                    mnist_images, mnist_labels,
+                    **kw,
+                )
+            all_results.append({**result, 'seed': seed})
+
+        if use_mlflow and all_results:
+            _log_aggregated_metrics(all_results)
+
     return all_results
 
 
@@ -1492,6 +1567,7 @@ def _init_globals(cfg: DictConfig) -> None:
     global AUX_HEBBIAN_MODE_DEFAULT, CULL_UTILITY_MODE_DEFAULT
     global SEED, PER_UNIT_LOG_MAX_UNITS
     global MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT_NAME, GLOBAL_RUN_NAME
+    global LOG_FREQ, LOG_MODE
 
     N_TASKS          = cfg.dataset.n_tasks
     NUM_CLASSES      = cfg.dataset.num_classes
@@ -1552,6 +1628,9 @@ def _init_globals(cfg: DictConfig) -> None:
     MLFLOW_TRACKING_URI    = cfg.mlflow_tracking_uri
     MLFLOW_EXPERIMENT_NAME = cfg.mlflow_experiment_name
     GLOBAL_RUN_NAME        = cfg.mlflow_run_name
+
+    LOG_FREQ = int(cfg.train.log_freq)
+    LOG_MODE = str(cfg.train.get('log_mode', 'interval'))
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1911,25 +1990,25 @@ def main(cfg: DictConfig) -> None:
                     'input_per_task': INPUT_PER_TASK,
                     'num_classes': NUM_CLASSES,
                 })
-            ip, op, ie, fl, fa, task_val = run_experiment(name, mnist_images, mnist_labels, **kw)
-        results[name] = (ip, op, ie, fl, fa, task_val)
+            res = run_experiment(name, mnist_images, mnist_labels, **kw)
+        results[name] = res
 
     print(f'\n{"=" * 85}')
     print('SUMMARY')
     print(f'{"=" * 85}')
     print(f'{"Experiment":<55} {"InPur":>6} {"OutPur":>7} {"InEnt":>6} {"Loss":>8} {"Acc":>7}')
     print('-' * 95)
-    for name, (ip, op, ie, fl, fa, task_val) in results.items():
-        flag = ' <--' if ip < 0.8 else ''
-        print(f'{name:<55} {ip:>6.3f} {op:>7.3f} {ie:>6.3f} {fl:>8.4f} {fa:>7.4f}{flag}')
+    for name, res in results.items():
+        flag = ' <--' if res['ip'] < 0.8 else ''
+        print(f'{name:<55} {res["ip"]:>6.3f} {res["op"]:>7.3f} {res["ie"]:>6.3f} {res["fl"]:>8.4f} {res["fa"]:>7.4f}{flag}')
 
     print(f'\n{"=" * 85}')
     print('SINGLE-TASK INPUT VALIDATION SUMMARY')
     print(f'  (Δloss = single-task loss minus full-input loss; pure network → Δ≈0, other_mag≈0)')
     print(f'{"=" * 85}')
-    for name, (ip, op, ie, fl, fa, task_val) in results.items():
+    for name, res in results.items():
         print(f'\n  {name}')
-        for t, (loss_full, loss_isolated, delta) in enumerate(task_val):
+        for t, (loss_full, loss_isolated, delta) in enumerate(res['task_val']):
             flag = '  <-- relies on other inputs' if delta > 0.01 else ''
             print(f'    Task {t}:  full={loss_full:.4f}  isolated={loss_isolated:.4f}  '
                   f'Δ={delta:+.4f}{flag}')

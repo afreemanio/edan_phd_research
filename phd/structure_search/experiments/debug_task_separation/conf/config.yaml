@@ -11,6 +11,7 @@ dataset:
 model:
   n_hidden_layers: 1
   n_hidden_max_per_layer: [100]
+  # n_hidden_max_per_layer: [10]
   leaky_relu_slope: 0.01
   use_bias_feature: true
   n_hidden_init_per_layer: [2]
@@ -75,7 +76,41 @@ seeds: [1, 2, 3, 4, 5]          # list of seeds for preset sweep
 # CUSTOM uses the pruner+generator with config settings; optionally borrows init
 # from a named baseline via custom_init_from.
 run_presets:
-  - CUSTOM
+  # - DENSE
   # - TASKWISE-DENSE
   # - SPARSE
+  - CUSTOM
 custom_init_from: "DENSE"   # set to DENSE / TASKWISE-DENSE / SPARSE to seed CUSTOM from there
+
+# Hyperparameter sweep (optional — run lr_sweep.py separately before the main run)
+# After lr_sweep.py finishes, set study_name below to auto-load the best LR.
+sweep:
+  # name: ""                  # suffix for the study name, e.g. "custom" or "dense_sparse"; empty = no suffix
+  name: "v1"                  # suffix for the study name, e.g. "custom" or "dense_sparse"; empty = no suffix
+  n_sweep_seeds: 1          # seeds used during LR sweep (fewer than main run)
+  # n_sweep_seeds: 3          # seeds used during LR sweep (fewer than main run)
+  sweep_seed_base: 100      # first seed for sweep; avoids overlap with main seeds
+  # lr_grid:                  # LR values to try (log-spaced powers of 2)
+    # - 9.77e-4   # 2^-10
+    # - 3.91e-3   # 2^-8
+    # - 1.56e-2   # 2^-6
+    # - 6.25e-2   # 2^-4
+    # - 2.50e-1   # 2^-2
+  lr_grid:
+    # - 1.00e+0   # 10^0.0
+    - 3.16e-1   # 10^-0.5
+    - 1.00e-1   # 10^-1.0
+    - 3.16e-2   # 10^-1.5
+    - 1.00e-2   # 10^-2.0
+    - 3.16e-3   # 10^-2.5
+    - 1.00e-3   # 10^-3.0
+    - 3.16e-4   # 10^-3.5
+    # - 1.00e-4   # 10^-4.0
+    # - 3.16e-5   # 10^-4.5
+    # - 1.00e-5   # 10^-5.0
+    # - 3.16e-6   # 10^-5.5
+    # - 1.00e-6   # 10^-6.0
+    # - 3.16e-7   # 10^-6.5
+    # - 1.00e-7   # 10^-7.0
+  # study_name: "test1-april29-1"            # Optuna study to load best LR from; empty = disabled
+  study_name: "test1-april29-2"            # Optuna study to load best LR from; empty = disabled

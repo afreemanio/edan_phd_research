@@ -1094,7 +1094,8 @@ def run_experiment(name, mnist_images, mnist_labels, *,
                    n_hidden_layers=None,
                    prune_per_block=None,
                    generate_mode=None,
-                   init_conns_per_layer=None):
+                   init_conns_per_layer=None,
+                   learning_rate=None):
     if utility is None:
         utility = UTILITY_MODE_DEFAULT
     if optimizer is None:
@@ -1152,14 +1153,18 @@ def run_experiment(name, mnist_images, mnist_labels, *,
             rng, gk = jax.random.split(rng)
             params, masks, _, _ = generate_unit_path(params, masks, gk, all_out)
 
+    _lr_sgd = learning_rate if learning_rate is not None else SGD_LR
+    _lr_adam = learning_rate if learning_rate is not None else ADAM_LR
+    _lr_adamw = learning_rate if learning_rate is not None else ADAMW_LR
+
     if optimizer == 'sgd':
-        opt = optax.sgd(SGD_LR)
+        opt = optax.sgd(_lr_sgd)
     elif optimizer == 'adam':
-        opt = optax.adam(ADAM_LR)
+        opt = optax.adam(_lr_adam)
     elif optimizer == 'adamw':
-        opt = optax.adamw(ADAMW_LR)
+        opt = optax.adamw(_lr_adamw)
     elif optimizer == 'adamw_weight_decay':
-        opt = optax.adamw(ADAMW_LR, weight_decay=WEIGHT_DECAY)
+        opt = optax.adamw(_lr_adamw, weight_decay=WEIGHT_DECAY)
     elif optimizer == 'idbd_rms_base_adam':
         opt = optax_idbd(
             meta_lr=1e-4,
@@ -1481,21 +1486,34 @@ def run_preset_seeds(
     mnist_images,
     mnist_labels,
     use_mlflow: bool,
+    *,
+    learning_rate: Optional[float] = None,
+    sweep_mode: bool = False,
 ) -> List[dict]:
     """Run ``preset`` once per seed.
 
-    MLflow structure (when enabled):
-    - Parent run per preset: config params + aggregated metrics across seeds.
-    - Child run per seed (nested=True): individual per-step and final metrics.
+    MLflow structure (when ``use_mlflow=True`` and ``sweep_mode=False``):
+    - Parent run per preset: config params + aggregated step/final metrics.
+    - Child run per seed (nested=True): per-step and final metrics.
+
+    When ``sweep_mode=True`` the caller (e.g. mlflow_sweeper) owns the active
+    run.  Each seed is logged as a nested child of that run; parent-level params
+    and aggregated time-series are skipped to avoid conflicts across presets.
+
+    ``learning_rate`` overrides the global optimizer LR for this call.
     """
     all_results: List[dict] = []
-    parent_run_name = (
-        f"{GLOBAL_RUN_NAME} | {preset.name}" if GLOBAL_RUN_NAME else preset.name
-    )
-    parent_ctx = mlflow.start_run(run_name=parent_run_name) if use_mlflow else _null_context()
+
+    if sweep_mode:
+        parent_ctx: Any = _null_context()
+    else:
+        parent_run_name = (
+            f"{GLOBAL_RUN_NAME} | {preset.name}" if GLOBAL_RUN_NAME else preset.name
+        )
+        parent_ctx = mlflow.start_run(run_name=parent_run_name) if use_mlflow else _null_context()
 
     with parent_ctx:
-        if use_mlflow:
+        if not sweep_mode and use_mlflow:
             mlflow.log_params({
                 'preset': preset.name,
                 'n_seeds': len(seeds),
@@ -1511,8 +1529,7 @@ def run_preset_seeds(
                 'generate_mode': preset.generate_mode if preset.generate_mode is not None else GENERATE_MODE,
                 'connection_budget': CONNECTION_BUDGET,
                 'optimizer': OPTIMIZER_DEFAULT,
-                'sgd_lr': SGD_LR,
-                'adam_lr': ADAM_LR,
+                'learning_rate': learning_rate if learning_rate is not None else SGD_LR,
                 'use_bias_feature': USE_BIAS_FEATURE,
             })
 
@@ -1527,10 +1544,15 @@ def run_preset_seeds(
                 'seed': seed,
                 'prune_per_block': preset.prune_per_block,
                 'generate_mode': preset.generate_mode,
+                'learning_rate': learning_rate,
             }
             with child_ctx:
                 if use_mlflow:
-                    mlflow.log_params({'preset': preset.name, 'seed': seed})
+                    mlflow.log_params({
+                        'preset': preset.name,
+                        'seed': seed,
+                        'learning_rate': learning_rate if learning_rate is not None else SGD_LR,
+                    })
                 result = run_experiment(
                     f"{preset.name} seed={seed}",
                     mnist_images, mnist_labels,
@@ -1538,10 +1560,59 @@ def run_preset_seeds(
                 )
             all_results.append({**result, 'seed': seed})
 
-        if use_mlflow and all_results:
+        # Aggregate across seeds and log to the active run.
+        # In sweep mode the active run is the sweeper's trial run; step-level
+        # time-series are skipped there to keep the trial run lightweight.
+        if use_mlflow and all_results and not sweep_mode:
             _log_aggregated_metrics(all_results)
 
     return all_results
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SWEEP INTEGRATION HELPERS
+# ══════════════════════════════════════════════════════════════════════
+
+def _get_optuna_uri() -> str:
+    """Resolve the Optuna storage URI from the environment or a local default."""
+    import os
+    uri = os.environ.get('OPTUNA_TRACKING_URI', 'sqlite:///lr_sweep_optuna.db')
+    prefix = 'sqlite:///'
+    if uri.startswith(prefix) and not os.path.isabs(uri[len(prefix):]):
+        uri = f'sqlite:///{os.path.abspath(uri[len(prefix):])}'
+    return uri
+
+
+def _load_best_lr_from_study(study_name: str, optuna_storage: str) -> Optional[float]:
+    """Return the best LR from a completed Optuna study, or None if unavailable.
+
+    The mlflow_sweeper stores studies as "{experiment}/{sweep_name}".  If
+    ``study_name`` has no slash the experiment prefix is added automatically.
+    """
+    import optuna as _optuna
+    _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+    if '/' not in study_name:
+        study_name = f'{MLFLOW_EXPERIMENT_NAME}/{study_name}'
+    try:
+        study = _optuna.load_study(study_name=study_name, storage=optuna_storage)
+    except Exception as e:
+        print(f"[sweep] Could not load study '{study_name}': {e}")
+        available = _optuna.get_all_study_names(optuna_storage)
+        if available:
+            print(f"[sweep] Available studies: {available}")
+        return None
+    completed = [
+        t for t in study.trials
+        if t.state.name == 'COMPLETE' and t.value is not None and 'lr' in t.params
+    ]
+    if not completed:
+        print(f"[sweep] No completed trials with 'lr' param in study '{study_name}'.")
+        return None
+    best = min(completed, key=lambda t: t.value)
+    import math as _math
+    print(f"[sweep] Best LR from '{study_name}': {best.params['lr']:.6g} "
+          f"(2^{_math.log2(best.params['lr']):+.1f}, loss={best.value:.4f})")
+    return float(best.params['lr'])
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1637,7 +1708,7 @@ def _init_globals(cfg: DictConfig) -> None:
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
 
-@hydra.main(config_path='conf', config_name='config', version_base='1.1')
+@hydra.main(config_path='conf', config_name='config_custom_tuned_lr', version_base='1.1')
 def main(cfg: DictConfig) -> None:
     _init_globals(cfg)
 
@@ -1653,6 +1724,14 @@ def main(cfg: DictConfig) -> None:
     if cfg.mlflow:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
+    # ── Auto-load best LR from sweep study (if configured) ──────────────
+    global SGD_LR, ADAM_LR, ADAMW_LR
+    _sweep_study_name = str(OmegaConf.select(cfg, 'sweep.study_name', default='') or '')
+    if _sweep_study_name:
+        _best_lr = _load_best_lr_from_study(_sweep_study_name, _get_optuna_uri())
+        if _best_lr is not None:
+            SGD_LR = ADAM_LR = ADAMW_LR = _best_lr
 
     if preset_names:
         presets = _build_presets(custom_init_from=custom_init_from)
